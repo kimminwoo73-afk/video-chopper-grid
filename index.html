@@ -31,6 +31,10 @@ button.danger:hover:not(:disabled){background:#ff6a61}
 button.mini{padding:1px 8px;font-size:12px}
 .rmlist{display:flex;flex-direction:column;gap:4px}
 .rmlist .row{display:flex;align-items:center;gap:8px}
+.rmlist .row{cursor:pointer;border-radius:6px;padding:2px 4px}
+.rmlist .row:hover{background:#ffffff0a}
+.rmlist .row.pick{background:#f8514926;outline:1px solid var(--danger)}
+.rmlist .row.pick .time{color:var(--fg)}
 .rmlist .row .time{flex:1}
 input[type=number]{
   background:#0d1117;border:1px solid var(--line);border-radius:6px;
@@ -109,6 +113,15 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
   position:absolute;top:0;bottom:0;pointer-events:none;
   background:repeating-linear-gradient(45deg,#f8514966 0 6px,#f8514922 6px 12px);
   border-left:1px solid var(--danger);border-right:1px solid var(--danger);
+}
+#timeline .rm.pick{
+  background:repeating-linear-gradient(45deg,#f85149bb 0 6px,#f8514955 6px 12px);
+  outline:2px solid #fff;outline-offset:-2px;
+}
+/* 완전히 삭제한 구간이 이어 붙은 자리 — 타임라인 아래쪽의 작은 빨간 삼각형 */
+#timeline .join{
+  position:absolute;bottom:0;width:14px;height:12px;margin-left:-7px;pointer-events:none;
+  background:var(--danger);clip-path:polygon(50% 0,100% 100%,0 100%);
 }
 #timeline .sel{
   position:absolute;top:0;bottom:0;pointer-events:none;
@@ -230,7 +243,7 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
     <span>컷 <b id="sCuts">0</b>개</span>
     <span>출력 프레임 <b id="sFrames">0</b>장</span>
     <span>그리드 <b id="sGrid">—</b></span>
-    <span id="sRm" hidden>삭제 구간 <b id="sRmN">0</b>개 · 남은 길이 <b id="sKeep">—</b></span>
+    <span id="sRm" hidden>잘라낸 구간 <b id="sRmN">0</b>개 · 완전 삭제 <b id="sDelN">0</b>개 · 남은 길이 <b id="sKeep">—</b></span>
     <span id="sLF" hidden><span class="lfdot"></span>LF 포함</span>
   </div>
  </div>
@@ -276,6 +289,15 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
     </div>
     <div class="grp"><span class="time" id="selInfo"></span></div>
     <div class="rmlist" id="rmList"></div>
+    <div class="grp" id="gPick" hidden>
+      <span class="time" id="pickInfo"></span>
+      <button id="btnDelete" class="danger" title="단축키 Delete">🗑 삭제</button>
+      <button id="btnPickRestore">복원</button>
+    </div>
+    <div class="grp" id="gUndo" hidden>
+      <span class="time" id="undoInfo"></span>
+      <button id="btnUndo" class="mini" title="단축키 Ctrl+Z">↶ 되돌리기</button>
+    </div>
 
     <div class="sep"></div>
 
@@ -340,7 +362,11 @@ const S = {
   scale: 1,
   cols: 5,
   loaded: false,
-  removed: [],         // 삭제된 구간 [{a, b}] (초, a 포함 ~ b 미포함), 겹침 없이 오름차순
+  removed: [],         // 잘라낸 구간 (빨간 빗금) [{a, b}] (초, a 포함 ~ b 미포함), 겹침 없이 오름차순
+  delHist: [],         // 완전히 삭제한 구간, 삭제한 순서대로 (되돌리기용)
+  deleted: [],         // delHist를 합친 것 — 타임라인에서 접혀 사라지는 구간
+  gone: [],            // removed + deleted — 재생·그리드에서 건너뛰는 모든 구간
+  pick: -1,            // 골라 둔 빨간 구간 (S.removed의 번호, 없으면 -1)
   selA: null,          // 선택 중인 구간의 시작 (초)
   selB: null,          // 선택 중인 구간의 끝 (초, 미포함)
 };
@@ -362,6 +388,7 @@ function fmt(t){
 }
 
 function toast(msg){
+  document.querySelectorAll('.toast').forEach(n => n.remove());   // 겹치지 않게 이전 알림은 지운다
   const el = document.createElement('div');
   el.className = 'toast';
   el.textContent = msg;
@@ -377,25 +404,63 @@ function busy(show, msg){
 }
 const busyAt = p => { $('#busyFill').style.width = (clamp(p, 0, 1) * 100).toFixed(1) + '%'; };
 
-/* ── 삭제 구간 ────────────────────────── */
+/* ── 삭제 구간 ────────────────────────────────────────────
+   1단계 ✂ 잘라버리기 → S.removed (빨간 빗금, 타임라인에 남아 있음)
+   2단계 🗑 삭제      → S.deleted (타임라인에서 접혀 완전히 사라짐)
+   재생·프레임 이동·그리드에서는 둘 다 똑같이 건너뛴다 (S.gone).          */
 const snapFrame = t => Math.round(t * S.fps) / S.fps;
-const removedAt = t => S.removed.find(r => t >= r.a - 1e-6 && t < r.b - 1e-6) || null;
-const removedTotal = () => S.removed.reduce((s, r) => s + (r.b - r.a), 0);
+const inRange = (r, t) => t >= r.a - 1e-6 && t < r.b - 1e-6;
+const removedAt = t => S.gone.find(r => inRange(r, t)) || null;
+const sumLen = list => list.reduce((s, r) => s + (r.b - r.a), 0);
+const removedTotal = () => sumLen(S.gone);
 
 /* 겹치거나 맞닿은 구간은 하나로 합친다 */
-function normalizeRemoved(){
-  const list = S.removed
+function mergeRanges(list){
+  const sorted = list
     .map(r => ({ a: clamp(r.a, 0, S.duration), b: clamp(r.b, 0, S.duration) }))
     .filter(r => r.b - r.a > 1e-6)
     .sort((x, y) => x.a - y.a);
   const out = [];
-  for(const r of list){
+  for(const r of sorted){
     const last = out[out.length - 1];
     if(last && r.a <= last.b + 1e-6) last.b = Math.max(last.b, r.b);
-    else out.push({ ...r });
+    else out.push(r);
   }
-  S.removed = out;
+  return out;
 }
+
+/* 구간 목록을 바꾼 뒤에는 꼭 부른다 */
+function syncRanges(){
+  S.removed = mergeRanges(S.removed);
+  S.deleted = mergeRanges(S.delHist);
+  S.gone = mergeRanges([...S.removed, ...S.deleted]);
+  if(S.pick >= S.removed.length) S.pick = -1;
+}
+
+/* ── 편집 시간 ────────────────────────────────────────────
+   완전히 삭제한 구간을 접어 없앤 시간축. 타임라인과 시간 표시는 이 기준이다.
+   예) 0~6초 영상에서 1~2.5초를 삭제하면 원본 3초 = 편집 1.5초         */
+const editDur = () => Math.max(frameDur(), S.duration - sumLen(S.deleted));
+
+function toEdit(t){
+  let e = t;
+  for(const r of S.deleted){
+    if(t >= r.b) e -= r.b - r.a;
+    else { if(t > r.a) e -= t - r.a; break; }
+  }
+  return e;
+}
+
+function toSrc(e){
+  let t = e;
+  for(const r of S.deleted){
+    if(t >= r.a - 1e-9) t += r.b - r.a; else break;
+  }
+  return Math.min(t, S.duration);
+}
+
+const fmtE = t => fmt(toEdit(t));
+const tlPct = t => (toEdit(t) / editDur() * 100) + '%';
 
 /* 삭제 구간을 건너뛴, t 바로 직전의 살아 있는 프레임 */
 function prevKept(t){
@@ -424,30 +489,66 @@ function setSelEnd(t){
   renderRanges();
 }
 
-function clearSel(){ S.selA = S.selB = null; renderRanges(); }
+function clearSel(){ S.selA = S.selB = null; S.pick = -1; renderRanges(); }
 
 function removeSelection(){
   const sel = selection();
   if(!sel){ toast('먼저 시작 [ 과 끝 ] 을 찍어 구간을 골라주세요.'); return; }
   const before = S.removed.map(r => ({ ...r }));
   S.removed.push(sel);
-  normalizeRemoved();
+  syncRanges();
   if(S.duration - removedTotal() < frameDur() * 2){
     S.removed = before;
+    syncRanges();
     toast('영상 전체를 지울 수는 없습니다.');
     return;
   }
   S.selA = S.selB = null;
+  S.pick = S.removed.findIndex(r => inRange(r, sel.a));   // 방금 자른 구간을 바로 골라 둔다
   video.pause();
   const r = removedAt(video.currentTime);
   if(r) seekTo(r.b < S.duration - frameDur() / 2 ? r.b : prevKept(r.b));
   render();
-  toast(`${fmt(sel.a)} ~ ${fmt(sel.b)} 구간을 삭제했습니다.`);
+  toast(`${fmtE(sel.a)} ~ ${fmtE(sel.b)} 구간을 잘라냈습니다. 🗑 삭제를 누르면 완전히 없어집니다.`);
+}
+
+function pickRange(i){
+  S.pick = i;
+  renderRanges();
 }
 
 function restoreRange(i){
+  if(i < 0 || i >= S.removed.length) return;
   S.removed.splice(i, 1);
+  S.pick = -1;
+  syncRanges();
   render();
+}
+
+/* 골라 둔 빨간 구간을 완전히 삭제 — 타임라인에서 접혀 사라진다 */
+function deletePicked(){
+  const r = S.removed[S.pick];
+  if(!r){ toast('먼저 타임라인의 빨간 구간을 눌러 골라주세요.'); return; }
+  const msg = `${fmtE(r.a)} ~ ${fmtE(r.b)} 구간을 완전히 삭제했습니다. (되돌리기: Ctrl+Z)`;
+  S.removed.splice(S.pick, 1);
+  S.delHist.push({ a: r.a, b: r.b });
+  S.pick = -1;
+  syncRanges();
+  video.pause();
+  seekTo(video.currentTime);   // 지금 위치가 사라진 구간이면 바로 뒤로 옮겨진다
+  render();
+  toast(msg);
+}
+
+/* 마지막 삭제를 되돌린다 — 다시 빨간 구간으로 돌아온다 */
+function undoDelete(){
+  const r = S.delHist.pop();
+  if(!r) return;
+  S.removed.push(r);
+  syncRanges();
+  S.pick = S.removed.findIndex(x => inRange(x, r.a));
+  render();
+  toast('삭제를 되돌렸습니다. 빨간 구간으로 돌아왔습니다.');
 }
 
 /* ── 컷 목록 ──────────────────────────── */
@@ -463,9 +564,10 @@ function baseCutTimes(){
     const stepT = S.interval / S.fps;
     if(!isFinite(stepT) || stepT < 1e-6) return [0];
     // 누적 덧셈은 부동소수 오차가 쌓이므로 인덱스로 계산한다
-    const n = clamp(Math.ceil((S.duration - 1e-6) / stepT), 1, MAX_CUTS);
+    // 간격은 삭제한 구간을 뺀 편집 시간 기준으로 고르게 나눈다
+    const n = clamp(Math.ceil((editDur() - 1e-6) / stepT), 1, MAX_CUTS);
     const out = [];
-    for(let i = 0; i < n; i++) out.push(+(i * stepT).toFixed(6));
+    for(let i = 0; i < n; i++) out.push(+toSrc(i * stepT).toFixed(6));
     return out;
   }
   const set = new Set([0, ...S.manualCuts
@@ -476,11 +578,11 @@ function baseCutTimes(){
 
 /* 삭제 구간 안의 컷은 빼고, 삭제 구간이 끝나는 곳(이어 붙는 지점)은 새 컷으로 넣는다 */
 function skipRemoved(list){
-  if(!S.removed.length) return list;
+  if(!S.gone.length) return list;
   // 이어 붙는 지점 바로 뒤(2프레임 이내)의 컷은 거의 같은 장면이라 뺀다
-  const nearJoin = t => S.removed.some(r => t > r.b && t - r.b < frameDur() * 2);
+  const nearJoin = t => S.gone.some(r => t > r.b && t - r.b < frameDur() * 2);
   const all = list.filter(t => !removedAt(t) && !nearJoin(t));
-  for(const r of S.removed){
+  for(const r of S.gone){
     if(r.b < S.duration - frameDur() / 2) all.push(+r.b.toFixed(6));
   }
   all.sort((a, b) => a - b);
@@ -545,7 +647,7 @@ function render(){
   for(const t of cuts){
     const d = document.createElement('div');
     d.className = 'cut';
-    d.style.left = (t / S.duration * 100) + '%';
+    d.style.left = tlPct(t);
     d.dataset.t = t;
     frag.appendChild(d);
   }
@@ -564,40 +666,33 @@ function render(){
   $('#sFrames').textContent = entries.length;
   $('#sGrid').textContent = `${S.cols} × ${rows}  (${W} × ${H}px)`;
   $('#sLF').hidden = !S.addLF;
-  $('#sRm').hidden = !S.removed.length;
+  $('#sRm').hidden = !S.gone.length;
   $('#sRmN').textContent = S.removed.length;
+  $('#sDelN').textContent = S.delHist.length;
   $('#sKeep').textContent = fmt(S.duration - removedTotal());
-
-  const list = $('#rmList');
-  list.innerHTML = '';
-  S.removed.forEach((r, i) => {
-    const row = document.createElement('div');
-    row.className = 'row';
-    const txt = document.createElement('span');
-    txt.className = 'time';
-    txt.textContent = `🗑 ${fmt(r.a)} ~ ${fmt(r.b)}  (${(r.b - r.a).toFixed(2)}초)`;
-    const btn = document.createElement('button');
-    btn.className = 'mini';
-    btn.textContent = '복원';
-    btn.onclick = () => restoreRange(i);
-    row.append(txt, btn);
-    list.appendChild(row);
-  });
+  $('#tDur').textContent = fmt(editDur());
 }
 
-/* 타임라인 위의 삭제 구간·선택 구간 표시 */
+/* 타임라인 위의 잘라낸 구간·선택 구간 표시, 오른쪽 목록 */
 function renderRanges(){
   if(!S.loaded) return;
-  tl.querySelectorAll('.rm,.sel').forEach(n => n.remove());
-  const pct = t => (t / S.duration * 100) + '%';
+  tl.querySelectorAll('.rm,.sel,.join').forEach(n => n.remove());
   const box = (cls, a, b) => {
     const d = document.createElement('div');
     d.className = cls;
-    d.style.left = pct(a);
-    d.style.width = ((b - a) / S.duration * 100) + '%';
+    d.style.left = tlPct(a);
+    d.style.width = ((toEdit(b) - toEdit(a)) / editDur() * 100) + '%';
     tl.insertBefore(d, tl.firstChild);   // 컷·재생 헤드보다 아래에 깔리도록
   };
-  for(const r of S.removed) box('rm', r.a, r.b);
+  S.removed.forEach((r, i) => box(i === S.pick ? 'rm pick' : 'rm', r.a, r.b));
+  // 완전히 삭제한 구간이 있던 자리(앞뒤가 이어 붙은 곳)는 빨간 삼각형으로 표시
+  for(const r of S.deleted){
+    const d = document.createElement('div');
+    d.className = 'join';
+    d.style.left = tlPct(r.a);
+    d.title = '여기서 구간이 삭제되었습니다';
+    tl.insertBefore(d, tl.firstChild);
+  }
 
   const sel = selection();
   if(sel) box('sel', sel.a, sel.b);
@@ -606,18 +701,43 @@ function renderRanges(){
 
   $('#btnRemove').disabled = !sel;
   $('#selInfo').textContent = sel
-    ? `선택: ${fmt(sel.a)} ~ ${fmt(sel.b)}  (${(sel.b - sel.a).toFixed(2)}초) → ✂ 잘라버리기를 누르세요`
-    : S.selA !== null ? `시작 ${fmt(S.selA)} · 이제 끝 ] 을 찍으세요`
-    : S.selB !== null ? `끝 ${fmt(S.selB)} · 이제 시작 [ 을 찍으세요`
+    ? `선택: ${fmtE(sel.a)} ~ ${fmtE(sel.b)}  (${(sel.b - sel.a).toFixed(2)}초) → ✂ 잘라버리기를 누르세요`
+    : S.selA !== null ? `시작 ${fmtE(S.selA)} · 이제 끝 ] 을 찍으세요`
+    : S.selB !== null ? `끝 ${fmtE(S.selB)} · 이제 시작 [ 을 찍으세요`
+    : S.removed.length && S.pick < 0 ? '빨간 구간을 누르면 🗑 삭제할 수 있어요'
     : 'I / O 키 또는 Shift+드래그로 구간 선택';
+
+  // 잘라낸 구간 목록 — 줄을 누르면 그 구간을 고른다
+  const list = $('#rmList');
+  list.innerHTML = '';
+  S.removed.forEach((r, i) => {
+    const row = document.createElement('div');
+    row.className = i === S.pick ? 'row pick' : 'row';
+    row.onclick = () => pickRange(i);
+    const txt = document.createElement('span');
+    txt.className = 'time';
+    txt.textContent = `✂ ${fmtE(r.a)} ~ ${fmtE(r.b)}  (${(r.b - r.a).toFixed(2)}초)`;
+    const btn = document.createElement('button');
+    btn.className = 'mini';
+    btn.textContent = '복원';
+    btn.onclick = e => { e.stopPropagation(); restoreRange(i); };
+    row.append(txt, btn);
+    list.appendChild(row);
+  });
+
+  const picked = S.removed[S.pick];
+  $('#gPick').hidden = !picked;
+  if(picked) $('#pickInfo').textContent = `고른 구간 ${fmtE(picked.a)} ~ ${fmtE(picked.b)}`;
+  $('#gUndo').hidden = !S.delHist.length;
+  $('#undoInfo').textContent = `완전히 삭제한 구간 ${S.delHist.length}개`;
 }
 
 function updateHead(){
   let h = tl.querySelector('.head');
   if(!h){ h = document.createElement('div'); h.className = 'head'; tl.appendChild(h); }
-  h.style.left = (video.currentTime / (S.duration || 1) * 100) + '%';
-  $('#tCur').textContent = fmt(video.currentTime);
-  $('#tFrame').textContent = Math.round(video.currentTime * S.fps);
+  h.style.left = S.duration ? tlPct(video.currentTime) : '0%';
+  $('#tCur').textContent = fmtE(video.currentTime);
+  $('#tFrame').textContent = Math.round(toEdit(video.currentTime) * S.fps);
 }
 
 /* ── 영상 로드 ────────────────────────── */
@@ -661,6 +781,9 @@ video.addEventListener('loadedmetadata', async () => {
   S.vh = video.videoHeight;
   S.manualCuts = [];
   S.removed = [];
+  S.delHist = [];
+  S.pick = -1;
+  syncRanges();
   S.selA = S.selB = null;
   S.loaded = true;
   $('#drop').hidden = true;
@@ -741,7 +864,10 @@ async function detectFps(){
 
 /* ── 탐색 ─────────────────────────────── */
 function seekTo(t){
-  const target = clamp(t, 0, Math.max(0, S.duration - frameDur() / 2));
+  let target = clamp(t, 0, Math.max(0, S.duration - frameDur() / 2));
+  // 완전히 삭제한 구간은 보여주지 않는다 — 바로 뒤(끝이면 바로 앞)로 옮긴다
+  const d = S.deleted.find(r => inRange(r, target));
+  if(d) target = d.b < S.duration - frameDur() / 2 ? d.b : Math.max(0, d.a - frameDur());
   if(Math.abs(video.currentTime - target) < 1e-4) return Promise.resolve();
   return new Promise(resolve => {
     const on = () => { video.removeEventListener('seeked', on); resolve(); };
@@ -1025,9 +1151,10 @@ function savePng(){
 }
 
 /* ── 타임라인 조작 ────────────────────── */
+/* 타임라인 위치 → 원본 영상 시각 (삭제한 구간은 접혀 있으므로 편집 시간을 거쳐 바꾼다) */
 function posToTime(clientX){
   const r = tl.getBoundingClientRect();
-  return clamp((clientX - r.left) / r.width, 0, 1) * S.duration;
+  return toSrc(clamp((clientX - r.left) / r.width, 0, 1) * editDur());
 }
 
 (() => {
@@ -1046,6 +1173,11 @@ function posToTime(clientX){
       renderRanges();
       return;
     }
+    // 빨간 구간을 누르면 그 구간을 고른다 (🗑 삭제 / 복원할 수 있게)
+    const ri = S.removed.findIndex(r => inRange(r, t));
+    if(ri >= 0){ pickRange(ri); return; }
+    if(S.pick >= 0){ S.pick = -1; renderRanges(); }
+
     if(S.mode === 'SCRUB'){
       scrubbing = true;
       video.pause();
@@ -1074,7 +1206,7 @@ function posToTime(clientX){
     if(dragEl){
       moved = true;
       const t = posToTime(e.clientX);
-      dragEl.style.left = (t / S.duration * 100) + '%';
+      dragEl.style.left = tlPct(t);
       dragEl.dataset.newT = t;
     }
   });
@@ -1159,6 +1291,9 @@ $('#btnMark').onclick = () => addCut(video.currentTime);
 $('#btnIn').onclick = () => setSelStart(video.currentTime);
 $('#btnOut').onclick = () => setSelEnd(video.currentTime);
 $('#btnRemove').onclick = removeSelection;
+$('#btnDelete').onclick = deletePicked;
+$('#btnPickRestore').onclick = () => restoreRange(S.pick);
+$('#btnUndo').onclick = undoDelete;
 
 $('#sens').oninput = e => { S.sens = +e.target.value; $('#sensV').textContent = S.sens; };
 $('#btnDetect').onclick = detectCuts;
@@ -1230,7 +1365,11 @@ window.addEventListener('keydown', e => {
     case 'o': case 'O':
       setSelEnd(video.currentTime); break;
     case 'Delete': case 'Backspace':
-      if(selection()){ e.preventDefault(); removeSelection(); } break;
+      if(selection()){ e.preventDefault(); removeSelection(); }
+      else if(S.pick >= 0){ e.preventDefault(); deletePicked(); }
+      break;
+    case 'z': case 'Z':
+      if(e.ctrlKey || e.metaKey){ e.preventDefault(); undoDelete(); } break;
     case 'Escape':
       clearSel(); break;
     case ' ':
