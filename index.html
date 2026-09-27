@@ -371,7 +371,9 @@ const S = {
   deleted: [],         // delHist를 합친 것 — 타임라인에서 접혀 사라지는 구간
   gone: [],            // removed + deleted — 재생·그리드에서 건너뛰는 모든 구간
   pick: -1,
-  exporting: false,    // 영상 저장(녹화) 중            // 골라 둔 빨간 구간 (S.removed의 번호, 없으면 -1)
+  exporting: false,    // 영상 저장(녹화) 중
+  played: false,       // 영상을 연 뒤 한 번이라도 재생해 봤는지 (소리 유무 판단용)
+  hasAudio: null,      // 원본에 소리가 있는지 (null = 아직 모름)            // 골라 둔 빨간 구간 (S.removed의 번호, 없으면 -1)
   selA: null,          // 선택 중인 구간의 시작 (초)
   selB: null,          // 선택 중인 구간의 끝 (초, 미포함)
 };
@@ -677,7 +679,9 @@ function render(){
   $('#sKeep').textContent = fmt(S.duration - removedTotal());
   $('#tDur').textContent = fmt(editDur());
   const keep = S.duration - removedTotal();
-  $('#saveInfo').textContent = `남은 ${fmt(keep)} · 저장에 약 ${Math.ceil(keep)}초 걸려요`;
+  if(S.hasAudio === null || S.hasAudio === false) S.hasAudio = detectAudio();   // 재생할수록 더 정확해진다
+  $('#saveInfo').textContent = `남은 ${fmt(keep)} · 저장에 약 ${Math.ceil(keep)}초 걸려요` +
+    (S.hasAudio === false ? ' · 🔇 원본에 소리 없음' : '');
 }
 
 /* 타임라인 위의 잘라낸 구간·선택 구간 표시, 오른쪽 목록 */
@@ -788,6 +792,8 @@ video.addEventListener('loadedmetadata', async () => {
   S.vh = video.videoHeight;
   S.manualCuts = [];
   S.removed = [];
+  S.played = false;
+  S.hasAudio = null;
   S.delHist = [];
   S.pick = -1;
   syncRanges();
@@ -816,6 +822,7 @@ video.addEventListener('error', () => {
 });
 
 video.addEventListener('timeupdate', updateHead);
+video.addEventListener('playing', () => { S.played = true; });
 video.addEventListener('seeked', updateHead);
 video.addEventListener('play', () => { $('#btnPlay').textContent = '❚❚'; requestAnimationFrame(skipWhilePlaying); });
 
@@ -1029,21 +1036,45 @@ function keptSegments(){
   return out;
 }
 
-function pickRecorderType(){
+/* 저장 형식 고르기.
+   mp4 안에 Opus 소리를 넣으면 크롬 밖의 재생기(윈도우 기본 재생기 등)에서 소리가 안 난다.
+   그래서 소리가 있으면 "mp4 + AAC"를 먼저 쓰고, 안 되면 webm(Opus)으로 저장한다. */
+function pickRecorderType(withAudio){
   if(!window.MediaRecorder) return null;
-  const list = [
+  const list = withAudio ? [
     ['video/mp4;codecs=avc1.42E01F,mp4a.40.2', 'mp4'],
-    ['video/mp4', 'mp4'],
+    ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'mp4'],
+    ['video/mp4;codecs=avc1,mp4a.40.2', 'mp4'],
     ['video/webm;codecs=vp9,opus', 'webm'],
     ['video/webm;codecs=vp8,opus', 'webm'],
     ['video/webm', 'webm'],
+  ] : [
+    ['video/mp4;codecs=avc1.42E01F', 'mp4'],
+    ['video/mp4;codecs=avc1', 'mp4'],
+    ['video/webm;codecs=vp9', 'webm'],
+    ['video/webm;codecs=vp8', 'webm'],
+    ['video/webm', 'webm'],
+    ['video/mp4', 'mp4'],
   ];
   return list.find(([m]) => MediaRecorder.isTypeSupported(m)) || null;
 }
 
+/* 원본에 소리가 있는지: true / false / null(모름).
+   크롬은 지금까지 풀어 본 소리 양(webkitAudioDecodedByteCount)으로 알 수 있다.
+   영상을 열 때 fps를 재느라 잠깐 재생하므로, 소리가 있으면 0보다 커진다. */
+function detectAudio(){
+  if('mozHasAudio' in video) return !!video.mozHasAudio;
+  if('webkitAudioDecodedByteCount' in video){
+    if(video.webkitAudioDecodedByteCount > 0) return true;
+    return S.played ? false : null;
+  }
+  return null;
+}
+
 async function saveEditedVideo(){
   if(!S.loaded || S.exporting) return;
-  const type = pickRecorderType();
+  const hasAudio = detectAudio();
+  const type = pickRecorderType(hasAudio !== false);
   const cv0 = document.createElement('canvas');
   if(!type || !cv0.captureStream){
     toast('이 브라우저는 영상 저장을 지원하지 않습니다. 크롬이나 엣지에서 해주세요.');
@@ -1057,7 +1088,7 @@ async function saveEditedVideo(){
   cv.width = S.vw; cv.height = S.vh;
   const cx = cv.getContext('2d');
   const stream = cv.captureStream();
-  const ag = getAudioGraph();
+  const ag = hasAudio !== false ? getAudioGraph() : null;
   if(ag){
     await ag.ctx.resume().catch(() => {});
     ag.rec.stream.getAudioTracks().forEach(t => stream.addTrack(t));
@@ -1138,7 +1169,10 @@ async function saveEditedVideo(){
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 60000);
   const size = blob.size >= 1048576 ? (blob.size / 1048576).toFixed(1) + 'MB' : Math.ceil(blob.size / 1024) + 'KB';
-  toast(`저장했습니다: ${a.download} (${size})`);
+  S.hasAudio = detectAudio();   // 전체를 재생했으니 이제는 확실히 안다
+  render();
+  toast(`저장했습니다: ${a.download} (${size})` +
+    (S.hasAudio === false ? ' · 원본 영상에 소리가 없어서 저장한 영상에도 소리가 없습니다.' : ''));
 }
 
 /* ── 미리보기 ─────────────────────────── */
