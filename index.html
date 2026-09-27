@@ -7,7 +7,7 @@
 <style>
 :root{
   --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --line:#2a313c;
-  --fg:#e6edf3; --dim:#8b949e; --accent:#3fb950; --lf:#4da3ff; --danger:#f85149;
+  --fg:#e6edf3; --dim:#8b949e; --accent:#3fb950; --lf:#4da3ff; --danger:#f85149; --sel:#e3b341;
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
@@ -26,6 +26,12 @@ button:disabled{opacity:.4;cursor:default}
 button.on{background:var(--accent);border-color:var(--accent);color:#04250f;font-weight:600}
 button.primary{background:var(--accent);border-color:var(--accent);color:#04250f;font-weight:600}
 button.primary:hover:not(:disabled){background:#4ac45c}
+button.danger{background:var(--danger);border-color:var(--danger);color:#2a0705;font-weight:600}
+button.danger:hover:not(:disabled){background:#ff6a61}
+button.mini{padding:1px 8px;font-size:12px}
+.rmlist{display:flex;flex-direction:column;gap:4px}
+.rmlist .row{display:flex;align-items:center;gap:8px}
+.rmlist .row .time{flex:1}
 input[type=number]{
   background:#0d1117;border:1px solid var(--line);border-radius:6px;
   padding:5px 6px;width:66px;text-align:center;
@@ -91,6 +97,17 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
 #timeline.chop .cut{cursor:ew-resize}
 #timeline .cut::after{content:"";position:absolute;left:-5px;right:-5px;top:0;bottom:0}
 #timeline .cut.hot{background:var(--danger);box-shadow:0 0 8px #f8514999}
+/* 삭제된 구간(빨간 빗금)과 선택 중인 구간(노란 상자) */
+#timeline .rm{
+  position:absolute;top:0;bottom:0;pointer-events:none;
+  background:repeating-linear-gradient(45deg,#f8514966 0 6px,#f8514922 6px 12px);
+  border-left:1px solid var(--danger);border-right:1px solid var(--danger);
+}
+#timeline .sel{
+  position:absolute;top:0;bottom:0;pointer-events:none;
+  background:#e3b34133;border-left:2px solid var(--sel);border-right:2px solid var(--sel);
+}
+#timeline .sel.pt{background:none;border-right:none;width:0!important}
 #timeline .head{
   position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:#fff;
   pointer-events:none;box-shadow:0 0 7px #ffffff88;
@@ -205,6 +222,7 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
     <span>컷 <b id="sCuts">0</b>개</span>
     <span>출력 프레임 <b id="sFrames">0</b>장</span>
     <span>그리드 <b id="sGrid">—</b></span>
+    <span id="sRm" hidden>삭제 구간 <b id="sRmN">0</b>개 · 남은 길이 <b id="sKeep">—</b></span>
     <span id="sLF" hidden><span class="lfdot"></span>LF 포함</span>
   </div>
  </div>
@@ -239,6 +257,17 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
       <input type="range" id="sens" min="0" max="100" value="50">
       <span class="time" id="sensV">50</span>
     </div>
+
+    <div class="sep"></div>
+
+    <div class="grp">
+      <span class="lab">구간 삭제</span>
+      <button id="btnIn" title="단축키 I">시작 [</button>
+      <button id="btnOut" title="단축키 O">끝 ]</button>
+      <button id="btnRemove" class="danger" title="단축키 Delete" disabled>삭제</button>
+    </div>
+    <div class="grp"><span class="time" id="selInfo"></span></div>
+    <div class="rmlist" id="rmList"></div>
 
     <div class="sep"></div>
 
@@ -303,6 +332,9 @@ const S = {
   scale: 1,
   cols: 5,
   loaded: false,
+  removed: [],         // 삭제된 구간 [{a, b}] (초, a 포함 ~ b 미포함), 겹침 없이 오름차순
+  selA: null,          // 선택 중인 구간의 시작 (초)
+  selB: null,          // 선택 중인 구간의 끝 (초, 미포함)
 };
 
 const GAP = 4, PAD = 4;
@@ -337,11 +369,88 @@ function busy(show, msg){
 }
 const busyAt = p => { $('#busyFill').style.width = (clamp(p, 0, 1) * 100).toFixed(1) + '%'; };
 
+/* ── 삭제 구간 ────────────────────────── */
+const snapFrame = t => Math.round(t * S.fps) / S.fps;
+const removedAt = t => S.removed.find(r => t >= r.a - 1e-6 && t < r.b - 1e-6) || null;
+const removedTotal = () => S.removed.reduce((s, r) => s + (r.b - r.a), 0);
+
+/* 겹치거나 맞닿은 구간은 하나로 합친다 */
+function normalizeRemoved(){
+  const list = S.removed
+    .map(r => ({ a: clamp(r.a, 0, S.duration), b: clamp(r.b, 0, S.duration) }))
+    .filter(r => r.b - r.a > 1e-6)
+    .sort((x, y) => x.a - y.a);
+  const out = [];
+  for(const r of list){
+    const last = out[out.length - 1];
+    if(last && r.a <= last.b + 1e-6) last.b = Math.max(last.b, r.b);
+    else out.push({ ...r });
+  }
+  S.removed = out;
+}
+
+/* 삭제 구간을 건너뛴, t 바로 직전의 살아 있는 프레임 */
+function prevKept(t){
+  let p = t - frameDur(), r;
+  while(p >= 0 && (r = removedAt(p))) p = r.a - frameDur();
+  return p;
+}
+
+/* 선택 구간 (둘 다 찍혀 있고 1프레임 이상일 때만) */
+function selection(){
+  if(S.selA === null || S.selB === null) return null;
+  const a = Math.min(S.selA, S.selB), b = Math.max(S.selA, S.selB);
+  return b - a >= frameDur() - 1e-6 ? { a, b } : null;
+}
+
+function setSelStart(t){
+  S.selA = clamp(snapFrame(t), 0, S.duration);
+  if(S.selB !== null && S.selB <= S.selA) S.selB = null;
+  renderRanges();
+}
+
+/* 끝 지점은 "이 프레임까지 포함해서" 지우도록 1프레임 뒤를 경계로 잡는다 */
+function setSelEnd(t){
+  S.selB = clamp(snapFrame(t) + frameDur(), 0, S.duration);
+  if(S.selA !== null && S.selA >= S.selB) S.selA = null;
+  renderRanges();
+}
+
+function clearSel(){ S.selA = S.selB = null; renderRanges(); }
+
+function removeSelection(){
+  const sel = selection();
+  if(!sel){ toast('먼저 시작 [ 과 끝 ] 을 찍어 구간을 골라주세요.'); return; }
+  const before = S.removed.map(r => ({ ...r }));
+  S.removed.push(sel);
+  normalizeRemoved();
+  if(S.duration - removedTotal() < frameDur() * 2){
+    S.removed = before;
+    toast('영상 전체를 지울 수는 없습니다.');
+    return;
+  }
+  S.selA = S.selB = null;
+  video.pause();
+  const r = removedAt(video.currentTime);
+  if(r) seekTo(r.b < S.duration - frameDur() / 2 ? r.b : prevKept(r.b));
+  render();
+  toast(`${fmt(sel.a)} ~ ${fmt(sel.b)} 구간을 삭제했습니다.`);
+}
+
+function restoreRange(i){
+  S.removed.splice(i, 1);
+  render();
+}
+
 /* ── 컷 목록 ──────────────────────────── */
 const MAX_CUTS = 20000;   // 길이나 fps가 이상해도 배열이 터지지 않도록 상한을 둔다
 
 function cutTimes(){
   if(!isFinite(S.duration) || S.duration <= 0) return [0];
+  return skipRemoved(baseCutTimes());
+}
+
+function baseCutTimes(){
   if(S.method === 'interval'){
     const stepT = S.interval / S.fps;
     if(!isFinite(stepT) || stepT < 1e-6) return [0];
@@ -357,6 +466,20 @@ function cutTimes(){
   return [...set].sort((a, b) => a - b).slice(0, MAX_CUTS);
 }
 
+/* 삭제 구간 안의 컷은 빼고, 삭제 구간이 끝나는 곳(이어 붙는 지점)은 새 컷으로 넣는다 */
+function skipRemoved(list){
+  if(!S.removed.length) return list;
+  // 이어 붙는 지점 바로 뒤(2프레임 이내)의 컷은 거의 같은 장면이라 뺀다
+  const nearJoin = t => S.removed.some(r => t > r.b && t - r.b < frameDur() * 2);
+  const all = list.filter(t => !removedAt(t) && !nearJoin(t));
+  for(const r of S.removed){
+    if(r.b < S.duration - frameDur() / 2) all.push(+r.b.toFixed(6));
+  }
+  all.sort((a, b) => a - b);
+  const tol = frameDur() / 2;
+  return all.filter((t, i) => i === 0 || t - all[i - 1] >= tol);
+}
+
 /* Interval 상태에서 컷을 손대면 현재 목록을 그대로 Manual로 승계 */
 function ensureManual(){
   if(S.method === 'interval'){
@@ -366,8 +489,9 @@ function ensureManual(){
 }
 
 function addCut(t){
-  ensureManual();
   t = clamp(t, 0, S.duration);
+  if(removedAt(t)){ toast('삭제된 구간 안에는 컷을 넣을 수 없습니다.'); return; }
+  ensureManual();
   const tol = frameDur() / 2;
   if(S.manualCuts.some(c => Math.abs(c - t) < tol)) return;
   S.manualCuts.push(t);
@@ -378,7 +502,10 @@ function addCut(t){
 function deleteNearestCut(t){
   ensureManual();
   let bi = -1, bd = Infinity;
-  S.manualCuts.forEach((c, i) => { const d = Math.abs(c - t); if(d < bd){ bd = d; bi = i; } });
+  S.manualCuts.forEach((c, i) => {
+    if(removedAt(c)) return;   // 삭제 구간 안에 숨어 있는 컷은 건드리지 않는다
+    const d = Math.abs(c - t); if(d < bd){ bd = d; bi = i; }
+  });
   if(bi >= 0){ S.manualCuts.splice(bi, 1); render(); }
 }
 
@@ -386,10 +513,14 @@ function deleteNearestCut(t){
 function gridEntries(){
   const out = [];
   for(const t of cutTimes()){
-    if(S.addLF && t > frameDur() / 2) out.push({ t: Math.max(0, t - frameDur()), lf: true });
+    if(S.addLF && t > frameDur() / 2){
+      const p = prevKept(t);   // 삭제 구간 바로 뒤의 컷이면, 삭제 구간 앞 프레임이 LF가 된다
+      if(p >= 0) out.push({ t: p, lf: true });
+    }
     out.push({ t, lf: false });
   }
-  const last = Math.max(0, S.duration - frameDur());
+  let last = Math.max(0, S.duration - frameDur());
+  if(removedAt(last)) last = Math.max(0, prevKept(last + frameDur()));
   if(!out.length || Math.abs(out[out.length - 1].t - last) > frameDur() / 2){
     out.push({ t: last, lf: false });
   }
@@ -411,6 +542,7 @@ function render(){
     frag.appendChild(d);
   }
   tl.appendChild(frag);
+  renderRanges();
   updateHead();
 
   const entries = gridEntries();
@@ -424,6 +556,52 @@ function render(){
   $('#sFrames').textContent = entries.length;
   $('#sGrid').textContent = `${S.cols} × ${rows}  (${W} × ${H}px)`;
   $('#sLF').hidden = !S.addLF;
+  $('#sRm').hidden = !S.removed.length;
+  $('#sRmN').textContent = S.removed.length;
+  $('#sKeep').textContent = fmt(S.duration - removedTotal());
+
+  const list = $('#rmList');
+  list.innerHTML = '';
+  S.removed.forEach((r, i) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const txt = document.createElement('span');
+    txt.className = 'time';
+    txt.textContent = `🗑 ${fmt(r.a)} ~ ${fmt(r.b)}  (${(r.b - r.a).toFixed(2)}초)`;
+    const btn = document.createElement('button');
+    btn.className = 'mini';
+    btn.textContent = '복원';
+    btn.onclick = () => restoreRange(i);
+    row.append(txt, btn);
+    list.appendChild(row);
+  });
+}
+
+/* 타임라인 위의 삭제 구간·선택 구간 표시 */
+function renderRanges(){
+  if(!S.loaded) return;
+  tl.querySelectorAll('.rm,.sel').forEach(n => n.remove());
+  const pct = t => (t / S.duration * 100) + '%';
+  const box = (cls, a, b) => {
+    const d = document.createElement('div');
+    d.className = cls;
+    d.style.left = pct(a);
+    d.style.width = ((b - a) / S.duration * 100) + '%';
+    tl.insertBefore(d, tl.firstChild);   // 컷·재생 헤드보다 아래에 깔리도록
+  };
+  for(const r of S.removed) box('rm', r.a, r.b);
+
+  const sel = selection();
+  if(sel) box('sel', sel.a, sel.b);
+  else if(S.selA !== null) box('sel pt', S.selA, S.selA);
+  else if(S.selB !== null) box('sel pt', S.selB, S.selB);
+
+  $('#btnRemove').disabled = !sel;
+  $('#selInfo').textContent = sel
+    ? `선택: ${fmt(sel.a)} ~ ${fmt(sel.b)}  (${(sel.b - sel.a).toFixed(2)}초) → 삭제를 누르세요`
+    : S.selA !== null ? `시작 ${fmt(S.selA)} · 이제 끝 ] 을 찍으세요`
+    : S.selB !== null ? `끝 ${fmt(S.selB)} · 이제 시작 [ 을 찍으세요`
+    : 'I / O 키 또는 Shift+드래그로 구간 선택';
 }
 
 function updateHead(){
@@ -474,6 +652,8 @@ video.addEventListener('loadedmetadata', async () => {
   S.vw = video.videoWidth;
   S.vh = video.videoHeight;
   S.manualCuts = [];
+  S.removed = [];
+  S.selA = S.selB = null;
   S.loaded = true;
   $('#drop').hidden = true;
   $('#work').hidden = false;
@@ -499,7 +679,18 @@ video.addEventListener('error', () => {
 
 video.addEventListener('timeupdate', updateHead);
 video.addEventListener('seeked', updateHead);
-video.addEventListener('play', () => { $('#btnPlay').textContent = '❚❚'; });
+video.addEventListener('play', () => { $('#btnPlay').textContent = '❚❚'; requestAnimationFrame(skipWhilePlaying); });
+
+/* 재생 중 삭제 구간에 들어서면 구간 끝으로 건너뛴다 (마지막 구간이면 멈춤) */
+function skipWhilePlaying(){
+  if(video.paused || !S.loaded) return;
+  const r = removedAt(video.currentTime);
+  if(r){
+    if(r.b < S.duration - frameDur() / 2) video.currentTime = r.b;
+    else { video.pause(); seekTo(prevKept(r.b)); return; }
+  }
+  requestAnimationFrame(skipWhilePlaying);
+}
 video.addEventListener('pause', () => { $('#btnPlay').textContent = '▶'; });
 
 /* fps 자동 감지 — 프레임 표시 간격의 중앙값으로 추정 */
@@ -553,7 +744,11 @@ function seekTo(t){
 
 function stepFrames(n){
   video.pause();
-  seekTo(video.currentTime + n * frameDur());
+  let t = video.currentTime + n * frameDur();
+  const r = removedAt(t);
+  if(r) t = n > 0 && r.b < S.duration - frameDur() / 2 ? r.b : prevKept(r.b);
+  if(t < 0) return;   // 앞쪽이 전부 삭제된 경우
+  seekTo(t);
 }
 
 function jumpCut(dir){
@@ -584,6 +779,7 @@ async function detectCuts(){
 
   for(let t = 0; t < S.duration; t += stepT){
     if(cancelFlag) break;
+    if(removedAt(t)){ prev = null; continue; }   // 삭제 구간은 건너뛴다
     await seekTo(t);
     cx.drawImage(video, 0, 0, W, H);
     const cur = cx.getImageData(0, 0, W, H).data;
@@ -827,13 +1023,21 @@ function posToTime(clientX){
 }
 
 (() => {
-  let scrubbing = false, dragEl = null, moved = false;
+  let scrubbing = false, dragEl = null, moved = false, selecting = false;
 
   tl.addEventListener('pointerdown', e => {
     if(!S.loaded) return;
     tl.setPointerCapture(e.pointerId);
     const t = posToTime(e.clientX);
 
+    // Shift + 드래그 = 삭제할 구간 고르기 (모드와 상관없이)
+    if(e.shiftKey){
+      selecting = true;
+      video.pause();
+      S.selA = S.selB = snapFrame(t);
+      renderRanges();
+      return;
+    }
     if(S.mode === 'SCRUB'){
       scrubbing = true;
       video.pause();
@@ -851,6 +1055,13 @@ function posToTime(clientX){
   });
 
   tl.addEventListener('pointermove', e => {
+    if(selecting){
+      const t = posToTime(e.clientX);
+      S.selB = clamp(snapFrame(t), 0, S.duration);
+      renderRanges();
+      seekTo(t);
+      return;
+    }
     if(scrubbing){ seekTo(posToTime(e.clientX)); return; }
     if(dragEl){
       moved = true;
@@ -861,6 +1072,13 @@ function posToTime(clientX){
   });
 
   tl.addEventListener('pointerup', () => {
+    if(selecting){
+      selecting = false;
+      const sel = selection();
+      if(sel){ S.selA = sel.a; S.selB = sel.b; } else { S.selA = S.selB = null; }
+      renderRanges();
+      return;
+    }
     if(dragEl){
       const oldT = parseFloat(dragEl.dataset.t);
       ensureManual();
@@ -930,6 +1148,10 @@ $('#ivUp').onclick = () => setInterval_(S.interval + 1);
 
 $('#btnMark').onclick = () => addCut(video.currentTime);
 
+$('#btnIn').onclick = () => setSelStart(video.currentTime);
+$('#btnOut').onclick = () => setSelEnd(video.currentTime);
+$('#btnRemove').onclick = removeSelection;
+
 $('#sens').oninput = e => { S.sens = +e.target.value; $('#sensV').textContent = S.sens; };
 $('#btnDetect').onclick = detectCuts;
 
@@ -995,6 +1217,14 @@ window.addEventListener('keydown', e => {
       if(S.mode === 'CHOP'){ e.preventDefault(); deleteNearestCut(video.currentTime); } break;
     case 'm': case 'M':
       if(S.mode === 'CHOP') addCut(video.currentTime); break;
+    case 'i': case 'I':
+      setSelStart(video.currentTime); break;
+    case 'o': case 'O':
+      setSelEnd(video.currentTime); break;
+    case 'Delete': case 'Backspace':
+      if(selection()){ e.preventDefault(); removeSelection(); } break;
+    case 'Escape':
+      clearSel(); break;
     case ' ':
       e.preventDefault(); video.paused ? video.play() : video.pause(); break;
   }
