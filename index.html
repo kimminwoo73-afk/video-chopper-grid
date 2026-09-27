@@ -262,9 +262,9 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
 
     <div class="grp">
       <span class="lab">구간 삭제</span>
+      <button id="btnRemove" class="danger" title="단축키 Delete" disabled>✂ 잘라버리기</button>
       <button id="btnIn" title="단축키 I">시작 [</button>
       <button id="btnOut" title="단축키 O">끝 ]</button>
-      <button id="btnRemove" class="danger" title="단축키 Delete" disabled>삭제</button>
     </div>
     <div class="grp"><span class="time" id="selInfo"></span></div>
     <div class="rmlist" id="rmList"></div>
@@ -598,7 +598,7 @@ function renderRanges(){
 
   $('#btnRemove').disabled = !sel;
   $('#selInfo').textContent = sel
-    ? `선택: ${fmt(sel.a)} ~ ${fmt(sel.b)}  (${(sel.b - sel.a).toFixed(2)}초) → 삭제를 누르세요`
+    ? `선택: ${fmt(sel.a)} ~ ${fmt(sel.b)}  (${(sel.b - sel.a).toFixed(2)}초) → ✂ 잘라버리기를 누르세요`
     : S.selA !== null ? `시작 ${fmt(S.selA)} · 이제 끝 ] 을 찍으세요`
     : S.selB !== null ? `끝 ${fmt(S.selB)} · 이제 시작 [ 을 찍으세요`
     : 'I / O 키 또는 Shift+드래그로 구간 선택';
