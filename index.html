@@ -123,6 +123,11 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
   position:absolute;bottom:0;width:14px;height:12px;margin-left:-7px;pointer-events:none;
   background:var(--danger);clip-path:polygon(50% 0,100% 100%,0 100%);
 }
+/* 기준 화면(키프레임) 눈금 — 타임라인 위쪽의 작은 회색 삼각형 */
+#timeline .kf{
+  position:absolute;top:0;width:8px;height:6px;margin-left:-4px;pointer-events:none;
+  background:#8b949e;clip-path:polygon(0 0,100% 0,50% 100%);opacity:.8;
+}
 #timeline .sel{
   position:absolute;top:0;bottom:0;pointer-events:none;
   background:#e3b34133;border-left:2px solid var(--sel);border-right:2px solid var(--sel);
@@ -299,9 +304,11 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
       <button id="btnUndo" class="mini" title="단축키 Ctrl+Z">↶ 되돌리기</button>
     </div>
     <div class="grp">
-      <button id="btnSaveVideo" class="primary">💾 잘라낸 영상 저장</button>
-      <span class="time" id="saveInfo"></span>
+      <span class="lab">저장</span>
+      <button id="btnFastSave" class="primary" title="다시 녹화하지 않고 잘라 붙여서 몇 초 만에 원본 화질로 저장 (mp4 · mov)">⚡ 빠른 저장</button>
+      <button id="btnSaveVideo" title="재생하면서 녹화해서 저장 (모든 형식, 남은 길이만큼 걸림)">💾 녹화 저장</button>
     </div>
+    <div class="grp"><span class="time" id="saveInfo"></span></div>
 
     <div class="sep"></div>
 
@@ -382,7 +389,8 @@ const S = {
   pick: -1,
   exporting: false,    // 영상 저장(녹화) 중
   played: false,       // 영상을 연 뒤 한 번이라도 재생해 봤는지 (소리 유무 판단용)
-  hasAudio: null,      // 원본에 소리가 있는지 (null = 아직 모름)            // 골라 둔 빨간 구간 (S.removed의 번호, 없으면 -1)
+  hasAudio: null,      // 원본에 소리가 있는지 (null = 아직 모름)
+  keyframes: [],       // 기준 화면(키프레임) 시각 — ⚡ 빠른 저장은 여기서만 자를 수 있다            // 골라 둔 빨간 구간 (S.removed의 번호, 없으면 -1)
   selA: null,          // 선택 중인 구간의 시작 (초)
   selB: null,          // 선택 중인 구간의 끝 (초, 미포함)
 };
@@ -689,14 +697,30 @@ function render(){
   $('#tDur').textContent = fmt(editDur());
   const keep = S.duration - removedTotal();
   if(S.hasAudio === null || S.hasAudio === false) S.hasAudio = detectAudio();   // 재생할수록 더 정확해진다
-  $('#saveInfo').textContent = `남은 ${fmt(keep)} · 저장에 약 ${Math.ceil(keep)}초 걸려요` +
+  const fastOk = canFastSave();
+  $('#btnFastSave').disabled = !fastOk;
+  $('#saveInfo').textContent = `남은 길이 ${fmt(keep)} · ` +
+    (fastOk ? '⚡ 몇 초 · 원본 화질' : '⚡ mp4·mov만 가능') +
+    ` · 💾 약 ${Math.ceil(keep)}초` +
     (S.hasAudio === false ? ' · 🔇 원본에 소리 없음' : '');
 }
 
 /* 타임라인 위의 잘라낸 구간·선택 구간 표시, 오른쪽 목록 */
 function renderRanges(){
   if(!S.loaded) return;
-  tl.querySelectorAll('.rm,.sel,.join').forEach(n => n.remove());
+  tl.querySelectorAll('.rm,.sel,.join,.kf').forEach(n => n.remove());
+  // 기준 화면(키프레임) 눈금 — ⚡ 빠른 저장은 이 자리에서만 구간이 시작될 수 있다
+  if(S.keyframes.length > 1 && S.keyframes.length < 2000){
+    const frag = document.createDocumentFragment();
+    for(const t of S.keyframes){
+      if(removedAt(t) && S.deleted.some(r => inRange(r, t))) continue;
+      const d = document.createElement('div');
+      d.className = 'kf';
+      d.style.left = tlPct(t);
+      frag.appendChild(d);
+    }
+    tl.insertBefore(frag, tl.firstChild);
+  }
   const box = (cls, a, b) => {
     const d = document.createElement('div');
     d.className = cls;
@@ -804,6 +828,8 @@ video.addEventListener('loadedmetadata', async () => {
   S.removed = [];
   S.played = false;
   S.hasAudio = null;
+  S.keyframes = [];
+  loadKeyframes();
   S.delHist = [];
   S.pick = -1;
   syncRanges();
@@ -1183,6 +1209,341 @@ async function saveEditedVideo(){
   render();
   toast(`저장했습니다: ${a.download} (${size})` +
     (S.hasAudio === false ? ' · 원본 영상에 소리가 없어서 저장한 영상에도 소리가 없습니다.' : ''));
+}
+
+/* ── ⚡ 빠른 저장: 다시 녹화하지 않고 잘라 붙이기 (mp4 · mov) ──────────────
+   mp4 파일은 "목차(moov)"와 "내용(mdat)"으로 되어 있다. 목차에는 화면·소리 조각
+   하나하나가 파일의 어디에, 몇 바이트로, 몇 초에 있는지 적혀 있다.
+   남길 조각만 골라 새 목차를 쓰고 원본 조각을 그대로 이어 붙이면, 다시 압축하지
+   않으므로 몇 초 만에 끝나고 화질·소리도 원본 그대로다.
+   단, 화면은 기준 화면(키프레임)부터만 풀 수 있어서 각 구간의 시작을
+   그 구간 안의 첫 기준 화면으로 맞춘다.                                        */
+const canFastSave = () => !!S.file && (/\.(mp4|m4v|mov)$/i.test(S.file.name) || /mp4|quicktime/.test(S.file.type));
+
+const fourcc = (dv, p) => String.fromCharCode(dv.getUint8(p), dv.getUint8(p + 1), dv.getUint8(p + 2), dv.getUint8(p + 3));
+
+/* 상자(box) 목록 읽기: [크기 4바이트][종류 4글자][내용…] 이 반복된다 */
+function mp4Boxes(dv, start, end){
+  const out = [];
+  let p = start;
+  while(p + 8 <= end){
+    let size = dv.getUint32(p), hdr = 8;
+    const type = fourcc(dv, p + 4);
+    if(size === 1){ size = Number(dv.getBigUint64(p + 8)); hdr = 16; }
+    else if(size === 0) size = end - p;
+    if(size < hdr || p + size > end) break;
+    out.push({ type, start: p, body: p + hdr, end: p + size });
+    p += size;
+  }
+  return out;
+}
+const mp4Child = (dv, b, type) => (b && mp4Boxes(dv, b.body, b.end).find(x => x.type === type)) || null;
+const mp4Path = (dv, b, ...types) => types.reduce((x, t) => mp4Child(dv, x, t), b);
+
+/* 파일 맨 위 상자들을 훑어 목차(moov)를 찾는다 — 파일 전체를 읽지 않는다 */
+async function mp4ReadMoov(file){
+  let p = 0, moov = null, first = true;
+  while(p + 8 <= file.size){
+    const dv = new DataView(await file.slice(p, p + 16).arrayBuffer());
+    let size = dv.getUint32(0);
+    const type = fourcc(dv, 4);
+    if(first && !['ftyp', 'moov', 'mdat', 'free', 'wide', 'skip'].includes(type)) throw new Error('mp4 형식이 아닙니다');
+    first = false;
+    if(size === 1) size = Number(dv.getBigUint64(8));
+    else if(size === 0) size = file.size - p;
+    if(size < 8) break;
+    if(type === 'moof') throw new Error('조각난(fragmented) mp4는 빠른 저장을 지원하지 않습니다');
+    if(type === 'moov') moov = { p, size };
+    p += size;
+  }
+  if(!moov) throw new Error('목차(moov)를 찾지 못했습니다');
+  const dv = new DataView(await file.slice(moov.p, moov.p + moov.size).arrayBuffer());
+  return { dv, root: { type: 'moov', start: 0, body: 8, end: moov.size } };
+}
+
+/* 트랙 하나의 목차를 풀어 조각마다 [위치, 크기, 시각, 기준 화면 여부]를 만든다 */
+function mp4ParseTrack(dv, trak){
+  const mdia = mp4Child(dv, trak, 'mdia');
+  const kind = fourcc(dv, mp4Child(dv, mdia, 'hdlr').body + 8);
+  const mdhd = mp4Child(dv, mdia, 'mdhd');
+  const ts = dv.getUint32(mdhd.body + (dv.getUint8(mdhd.body) === 1 ? 20 : 12));
+  const tkhd = mp4Child(dv, trak, 'tkhd');
+  const tv = dv.getUint8(tkhd.body);
+  const w = dv.getUint32(tkhd.body + (tv === 1 ? 88 : 76)), h = dv.getUint32(tkhd.body + (tv === 1 ? 92 : 80));
+
+  // 편집 목록(elst): 재생을 몇 칸 뒤부터 시작하는지
+  let shift = 0;
+  const elst = mp4Path(dv, trak, 'edts', 'elst');
+  if(elst){
+    const ev = dv.getUint8(elst.body), cnt = dv.getUint32(elst.body + 4);
+    for(let i = 0, q = elst.body + 8; i < cnt; i++, q += ev === 1 ? 20 : 12){
+      const mt = ev === 1 ? Number(dv.getBigInt64(q + 8)) : dv.getInt32(q + 4);
+      if(mt >= 0){ shift = mt; break; }
+    }
+  }
+
+  const stbl = mp4Path(dv, mdia, 'minf', 'stbl');
+  const stsd = mp4Child(dv, stbl, 'stsd');
+  const stsz = mp4Child(dv, stbl, 'stsz');
+  const stts = mp4Child(dv, stbl, 'stts');
+  const stsc = mp4Child(dv, stbl, 'stsc');
+  const stco = mp4Child(dv, stbl, 'stco') || mp4Child(dv, stbl, 'co64');
+  if(!stsd || !stsz || !stts || !stsc || !stco) throw new Error('지원하지 않는 mp4 구조입니다');
+
+  const fixed = dv.getUint32(stsz.body + 4), n = dv.getUint32(stsz.body + 8);
+  const size = new Uint32Array(n);
+  for(let i = 0; i < n; i++) size[i] = fixed || dv.getUint32(stsz.body + 12 + 4 * i);
+
+  const dts = new Float64Array(n), dur = new Uint32Array(n);
+  for(let e = 0, k = 0, t = 0, cnt = dv.getUint32(stts.body + 4); e < cnt; e++){
+    const c = dv.getUint32(stts.body + 8 + 8 * e), d = dv.getUint32(stts.body + 12 + 8 * e);
+    for(let j = 0; j < c && k < n; j++, k++){ dts[k] = t; dur[k] = d; t += d; }
+  }
+
+  const cto = new Int32Array(n);
+  const ctts = mp4Child(dv, stbl, 'ctts');
+  if(ctts){
+    for(let e = 0, k = 0, cnt = dv.getUint32(ctts.body + 4); e < cnt; e++){
+      const c = dv.getUint32(ctts.body + 8 + 8 * e), o = dv.getInt32(ctts.body + 12 + 8 * e);
+      for(let j = 0; j < c && k < n; j++, k++) cto[k] = o;
+    }
+  }
+
+  let sync = null;   // null = 모든 조각이 기준 화면 (소리는 늘 그렇다)
+  const stss = mp4Child(dv, stbl, 'stss');
+  if(stss){
+    sync = new Uint8Array(n);
+    for(let e = 0, cnt = dv.getUint32(stss.body + 4); e < cnt; e++){
+      const k = dv.getUint32(stss.body + 8 + 4 * e) - 1;
+      if(k >= 0 && k < n) sync[k] = 1;
+    }
+  }
+
+  const big = stco.type === 'co64', chunks = dv.getUint32(stco.body + 4);
+  const chunkOff = i => big ? Number(dv.getBigUint64(stco.body + 8 + 8 * i)) : dv.getUint32(stco.body + 8 + 4 * i);
+  const off = new Float64Array(n);
+  const scN = dv.getUint32(stsc.body + 4);
+  for(let e = 0, k = 0; e < scN; e++){
+    const first = dv.getUint32(stsc.body + 8 + 12 * e), per = dv.getUint32(stsc.body + 12 + 12 * e);
+    const next = e + 1 < scN ? dv.getUint32(stsc.body + 8 + 12 * (e + 1)) : chunks + 1;
+    for(let c = first; c < next && k < n; c++){
+      let o = chunkOff(c - 1);
+      for(let j = 0; j < per && k < n; j++, k++){ off[k] = o; o += size[k]; }
+    }
+  }
+
+  return { kind, ts, w, h, shift, n, size, dts, dur, cto, sync, off,
+           stsd: new Uint8Array(dv.buffer, dv.byteOffset + stsd.start, stsd.end - stsd.start).slice(),
+           pts(i){ return (this.dts[i] + this.cto[i] - this.shift) / this.ts; } };
+}
+
+/* 남길 구간마다 들어갈 조각 번호를 고른다 */
+function mp4Select(V, A, segs){
+  const eps = 1e-3, parts = [];
+  let dropped = 0, maxSnap = 0;
+  for(const g of segs){
+    let a = g.a, b = g.b;
+    const v = [], au = [];
+    if(V){
+      // 구간 안의 첫 기준 화면부터 시작한다
+      let s = -1;
+      for(let i = 0; i < V.n; i++){
+        if((!V.sync || V.sync[i]) && V.pts(i) >= g.a - eps){ s = i; break; }
+      }
+      if(s < 0 || V.pts(s) >= g.b - eps){ dropped++; continue; }
+      a = V.pts(s);
+      maxSnap = Math.max(maxSnap, a - g.a);
+      let last = s;
+      for(let i = s; i < V.n; i++) if(V.pts(i) < g.b - eps) last = i;
+      let len = 0;
+      for(let i = s; i <= last; i++){
+        if(V.pts(i) >= a - eps){ v.push(i); len += V.dur[i]; }   // 기준 화면보다 앞선 화면은 풀 수 없으니 뺀다
+      }
+      b = a + len / V.ts;
+    }
+    if(A){
+      for(let i = 0; i < A.n; i++){
+        const t = A.pts(i);
+        if(t >= a - eps && t < b - eps) au.push(i);
+      }
+    }
+    if(v.length || au.length) parts.push({ v, a: au });
+  }
+  return { parts, dropped, maxSnap };
+}
+
+/* ── mp4 쓰기 도우미 ── */
+function u8cat(list){
+  const out = new Uint8Array(list.reduce((n, x) => n + x.length, 0));
+  let p = 0;
+  for(const x of list){ out.set(x, p); p += x.length; }
+  return out;
+}
+function mp4Num(bits, ...vals){   // 큰 쪽이 앞(빅 엔디언)인 숫자들을 바이트로
+  if(vals.length === 1 && Array.isArray(vals[0])) vals = vals[0];   // 값이 아주 많으면 배열로 받는다
+  const size = bits / 8, b = new Uint8Array(vals.length * size), dv = new DataView(b.buffer);
+  vals.forEach((v, i) => {
+    if(bits === 8) dv.setUint8(i, v);
+    else if(bits === 16) dv.setUint16(i * 2, v);
+    else if(bits === 32) dv.setUint32(i * 4, v >>> 0);
+    else dv.setBigUint64(i * 8, BigInt(Math.round(v)));
+  });
+  return b;
+}
+const mp4Str = t => new Uint8Array([...t].map(c => c.charCodeAt(0)));
+function mp4Box(type, ...parts){
+  const body = u8cat(parts.flat());
+  return u8cat([mp4Num(32, 8 + body.length), mp4Str(type), body]);
+}
+const mp4Full = (type, ver, flags, ...parts) => mp4Box(type, mp4Num(32, ver * 0x1000000 + flags), ...parts);
+const MP4_MATRIX = mp4Num(32, 0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000);
+
+/* 같은 값이 이어지면 [개수, 값]으로 줄여 쓴다 */
+function mp4Runs(vals){
+  const out = [];
+  for(const v of vals){
+    const last = out[out.length - 1];
+    if(last && last[1] === v) last[0]++; else out.push([1, v]);
+  }
+  return out;
+}
+
+function mp4Trak(T, idx, offs, id, movieTs, mediaTime){
+  const video = T.kind === 'vide';
+  const mediaDur = idx.reduce((n, i) => n + T.dur[i], 0);
+  const movieDur = Math.round(mediaDur / T.ts * movieTs);
+  const stts = mp4Runs(idx.map(i => T.dur[i]));
+  const ctos = idx.map(i => T.cto[i]);
+  const stbl = [
+    T.stsd,
+    mp4Full('stts', 0, 0, mp4Num(32, stts.length), stts.map(([c, d]) => mp4Num(32, c, d))),
+  ];
+  if(ctos.some(c => c !== 0)){
+    const runs = mp4Runs(ctos);
+    stbl.push(mp4Full('ctts', ctos.some(c => c < 0) ? 1 : 0, 0, mp4Num(32, runs.length), runs.map(([c, o]) => mp4Num(32, c, o))));
+  }
+  if(T.sync){
+    const ks = [];
+    idx.forEach((i, k) => { if(T.sync[i]) ks.push(k + 1); });
+    stbl.push(mp4Full('stss', 0, 0, mp4Num(32, ks.length), mp4Num(32, ks)));
+  }
+  stbl.push(
+    mp4Full('stsc', 0, 0, mp4Num(32, 1, 1, 1, 1)),                            // 조각 하나 = 묶음 하나
+    mp4Full('stsz', 0, 0, mp4Num(32, 0, idx.length), mp4Num(32, idx.map(i => T.size[i]))),
+    mp4Full('co64', 0, 0, mp4Num(32, idx.length), mp4Num(64, offs)),
+  );
+  return mp4Box('trak',
+    mp4Full('tkhd', 0, 3, mp4Num(32, 0, 0, id, 0, movieDur, 0, 0), mp4Num(16, 0, 0, video ? 0 : 0x100, 0),
+            MP4_MATRIX, mp4Num(32, T.w, T.h)),
+    mp4Box('edts', mp4Full('elst', 0, 0, mp4Num(32, 1, movieDur, mediaTime, 0x10000))),
+    mp4Box('mdia',
+      mp4Full('mdhd', 0, 0, mp4Num(32, 0, 0, T.ts, mediaDur), mp4Num(16, 0x55c4, 0)),
+      mp4Full('hdlr', 0, 0, mp4Num(32, 0), mp4Str(T.kind), mp4Num(32, 0, 0, 0),
+              mp4Str(video ? 'VideoHandler' : 'SoundHandler'), mp4Num(8, 0)),
+      mp4Box('minf',
+        video ? mp4Full('vmhd', 0, 1, mp4Num(16, 0, 0, 0, 0)) : mp4Full('smhd', 0, 0, mp4Num(16, 0, 0)),
+        mp4Box('dinf', mp4Full('dref', 0, 0, mp4Num(32, 1), mp4Full('url ', 0, 1))),
+        mp4Box('stbl', ...stbl))));
+}
+
+/* 고른 조각으로 새 mp4를 만든다. 원본 조각은 복사하지 않고 파일의 해당 부분을 그대로 가리킨다 */
+function mp4Build(file, V, A, sel, isMov){
+  const tracks = [V, A].filter(Boolean);
+  const idxOf = T => sel.parts.flatMap(p => T === V ? p.v : p.a);
+  const movieTs = 1000;
+
+  // 내용(mdat) 안의 순서: 구간마다 [화면 조각들, 소리 조각들]
+  const order = [];
+  for(const p of sel.parts){
+    if(V) p.v.forEach(i => order.push([V, i]));
+    if(A) p.a.forEach(i => order.push([A, i]));
+  }
+
+  const ftyp = isMov ? mp4Box('ftyp', mp4Str('qt  '), mp4Num(32, 0x200), mp4Str('qt  '))
+                     : mp4Box('ftyp', mp4Str('isom'), mp4Num(32, 0x200), mp4Str('isomiso2avc1mp41'));
+  const makeMoov = offsets => {
+    const traks = tracks.map((T, k) => {
+      const idx = idxOf(T);
+      const mediaTime = T === V ? (idx.length ? Math.max(0, T.cto[idx[0]]) : 0) : 0;
+      return mp4Trak(T, idx, offsets.get(T), k + 1, movieTs, mediaTime);
+    });
+    const dur = Math.max(...tracks.map(T => idxOf(T).reduce((n, i) => n + T.dur[i], 0) / T.ts * movieTs));
+    return mp4Box('moov',
+      mp4Full('mvhd', 0, 0, mp4Num(32, 0, 0, movieTs, Math.round(dur), 0x10000), mp4Num(16, 0x100, 0),
+              mp4Num(32, 0, 0), MP4_MATRIX, mp4Num(32, 0, 0, 0, 0, 0, 0, tracks.length + 1)),
+      ...traks);
+  };
+
+  // 목차 크기는 위치 값과 상관없이 같으므로, 한 번 만들어 크기를 잰 뒤 진짜 위치로 다시 만든다
+  const zero = new Map(tracks.map(T => [T, new Array(idxOf(T).length).fill(0)]));
+  const moovLen = makeMoov(zero).length;
+  let pos = ftyp.length + moovLen + 16;
+  const offsets = new Map(tracks.map(T => [T, []]));
+  let dataLen = 0;
+  const ranges = [];   // 이어지는 원본 범위는 하나로 합쳐 Blob 조각 수를 줄인다
+  for(const [T, i] of order){
+    offsets.get(T).push(pos);
+    pos += T.size[i];
+    dataLen += T.size[i];
+    const s = T.off[i], e = s + T.size[i], last = ranges[ranges.length - 1];
+    if(last && last[1] === s) last[1] = e; else ranges.push([s, e]);
+  }
+  // 트랙별 위치 목록의 순서는 idxOf 순서와 같다 (둘 다 구간 순서대로 모았다)
+  const moov = makeMoov(offsets);
+  const mdatHdr = u8cat([mp4Num(32, 1), mp4Str('mdat'), mp4Num(64, 16 + dataLen)]);
+  return new Blob([ftyp, moov, mdatHdr, ...ranges.map(([s, e]) => file.slice(s, e))],
+                  { type: isMov ? 'video/quicktime' : 'video/mp4' });
+}
+
+/* 타임라인에 기준 화면 눈금을 그리려고, 영상을 열 때 목차만 살짝 읽어 둔다 */
+async function loadKeyframes(){
+  const f = S.file;
+  if(!canFastSave()) return;
+  try{
+    const { dv, root } = await mp4ReadMoov(f);
+    const V = mp4Boxes(dv, root.body, root.end).filter(b => b.type === 'trak')
+      .map(t => { try{ return mp4ParseTrack(dv, t); }catch(e){ return null; } })
+      .find(t => t && t.kind === 'vide' && t.n);
+    if(!V || S.file !== f) return;
+    const ks = [];
+    for(let i = 0; i < V.n && ks.length < 5000; i++) if(!V.sync || V.sync[i]) ks.push(V.pts(i));
+    S.keyframes = V.sync ? ks.sort((a, b) => a - b) : [];   // 모든 화면이 기준 화면이면 눈금이 필요 없다
+    renderRanges();
+  }catch(e){ /* 빠른 저장을 못 하는 파일 — 눈금 없이 둔다 */ }
+}
+
+async function fastSave(){
+  if(!S.loaded || !canFastSave()) return;
+  const t0 = performance.now();
+  busy(true, '⚡ 잘라 붙이는 중…');
+  busyAt(0.2);
+  let blob, sel;
+  const isMov = /\.mov$/i.test(S.file.name) || /quicktime/.test(S.file.type);
+  try{
+    const { dv, root } = await mp4ReadMoov(S.file);
+    busyAt(0.5);
+    const traks = mp4Boxes(dv, root.body, root.end).filter(b => b.type === 'trak').map(t => {
+      try{ return mp4ParseTrack(dv, t); }catch(e){ return null; }
+    }).filter(Boolean);
+    const V = traks.find(t => t.kind === 'vide' && t.n) || null;
+    const A = traks.find(t => t.kind === 'soun' && t.n) || null;
+    if(!V && !A) throw new Error('화면이나 소리 트랙을 찾지 못했습니다');
+    sel = mp4Select(V, A, keptSegments());
+    if(!sel.parts.length) throw new Error('남길 구간이 너무 짧습니다 (기준 화면이 들어 있지 않아요)');
+    busyAt(0.8);
+    blob = mp4Build(S.file, V, A, sel, isMov);
+  }catch(e){
+    busy(false);
+    toast(`빠른 저장을 할 수 없는 파일입니다: ${e.message} → 💾 녹화 저장을 써 주세요.`);
+    return;
+  }
+  busy(false);
+  const name = `${baseName()}_edited.${isMov ? 'mov' : 'mp4'}`;
+  download(blob, name);
+  const secs = ((performance.now() - t0) / 1000).toFixed(1);
+  toast(`⚡ 저장했습니다: ${name} (${sizeText(blob.size)}, ${secs}초 걸림)` +
+    (sel.maxSnap > 0.05 ? ` · 기준 화면에 맞추느라 구간 시작이 최대 ${sel.maxSnap.toFixed(2)}초 늦춰졌어요` : '') +
+    (sel.dropped ? ` · 기준 화면이 없는 짧은 구간 ${sel.dropped}개는 빠졌어요` : ''));
 }
 
 /* ── 추출 (오디오 / 프레임) ─────────────────────────────── */
@@ -1644,6 +2005,7 @@ $('#btnDelete').onclick = deletePicked;
 $('#btnPickRestore').onclick = () => restoreRange(S.pick);
 $('#btnUndo').onclick = undoDelete;
 $('#btnSaveVideo').onclick = saveEditedVideo;
+$('#btnFastSave').onclick = fastSave;
 $('#btnAudio').onclick = extractAudio;
 $('#btnFrame').onclick = saveCurrentFrame;
 $('#btnFrames').onclick = saveAllFrames;
