@@ -56,9 +56,16 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
 .stage{
   flex:1 1 auto;min-height:0;max-height:70vh;
   background:#000;display:flex;align-items:center;justify-content:center;
-  position:relative;
+  position:relative;overflow:hidden;touch-action:none;
 }
-.stage video{max-width:100%;max-height:100%;display:block}
+.stage video{max-width:100%;max-height:100%;display:block;transform-origin:0 0}
+.stage.zoomed{cursor:grab}
+.stage.zoomed.drag{cursor:grabbing}
+.stage .zbadge{
+  position:absolute;right:10px;bottom:10px;pointer-events:none;
+  background:#0d1117cc;border:1px solid var(--line);border-radius:6px;
+  padding:3px 9px;font-size:11px;color:var(--dim);
+}
 
 .tlbar{display:flex;align-items:center;gap:10px;padding:8px 16px 0;flex:0 0 auto;flex-wrap:wrap}
 .seg{display:flex;gap:0}
@@ -171,7 +178,10 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
 
 <div id="work" hidden>
  <div class="main">
-  <div class="stage"><video id="video" playsinline></video></div>
+  <div class="stage" id="stage">
+    <video id="video" playsinline></video>
+    <div class="zbadge" id="zbadge" hidden></div>
+  </div>
 
   <div class="tlbar">
     <div class="seg">
@@ -469,6 +479,7 @@ video.addEventListener('loadedmetadata', async () => {
   $('#work').hidden = false;
   $('#btnNew').hidden = false;
   $('#tDur').textContent = fmt(S.duration);
+  resetStageZoom();
 
   const fps = await detectFps();
   if(fps){
@@ -658,6 +669,77 @@ function showPreview(cv, n, cols, rows){
   $('#pvInfo').textContent = `${cv.width} × ${cv.height}px · ${n}장 · ${cols}×${rows}`;
   fitPreview();
 }
+
+/* ---- 재생 화면 확대/축소 -------------------------------------------------
+   transform-origin 이 0 0 이므로  화면위치 = 원래위치 + (x,y) + z × 내부좌표.
+   커서 밑에 있던 지점이 그대로 머물도록 x,y 를 다시 계산한다.            */
+const stage = $('#stage');
+const vz = { z: 1, x: 0, y: 0 };
+
+function clampPan(){
+  const w = video.offsetWidth * vz.z, h = video.offsetHeight * vz.z;
+  if(!w || !h) return;
+  const sr = stage.getBoundingClientRect();
+  const bl = video.offsetLeft, bt = video.offsetTop;
+  const lo = (size, base, avail) => size >= avail ? avail - size - base : -base;
+  const hi = (size, base, avail) => size >= avail ? -base : avail - size - base;
+  const [xa, xb] = [lo(w, bl, sr.width), hi(w, bl, sr.width)];
+  const [ya, yb] = [lo(h, bt, sr.height), hi(h, bt, sr.height)];
+  vz.x = clamp(vz.x, Math.min(xa, xb), Math.max(xa, xb));
+  vz.y = clamp(vz.y, Math.min(ya, yb), Math.max(ya, yb));
+}
+
+function applyStageZoom(){
+  clampPan();
+  video.style.transform = `translate(${vz.x}px,${vz.y}px) scale(${vz.z})`;
+  const on = Math.abs(vz.z - 1) > 0.001;
+  stage.classList.toggle('zoomed', on);
+  const b = $('#zbadge');
+  b.hidden = !on;
+  b.textContent = `${Math.round(vz.z * 100)}%  ·  더블클릭 = 원래대로`;
+}
+
+function resetStageZoom(){
+  vz.z = 1; vz.x = 0; vz.y = 0;
+  applyStageZoom();
+}
+
+stage.addEventListener('wheel', e => {
+  if(!S.loaded) return;
+  e.preventDefault();
+  const r = video.getBoundingClientRect();
+  const baseX = r.left - vz.x, baseY = r.top - vz.y;   // transform 빼기 전 위치
+  const cx = e.clientX - baseX, cy = e.clientY - baseY;
+  const nz = clamp(vz.z * (e.deltaY < 0 ? 1.15 : 1 / 1.15), 1, 20);
+  const k = nz / vz.z;
+  vz.x = cx - (cx - vz.x) * k;
+  vz.y = cy - (cy - vz.y) * k;
+  vz.z = nz;
+  if(nz === 1){ vz.x = 0; vz.y = 0; }
+  applyStageZoom();
+}, { passive: false });
+
+(() => {
+  let on = false, sx = 0, sy = 0, ox = 0, oy = 0;
+  stage.addEventListener('pointerdown', e => {
+    if(vz.z <= 1) return;                 // 원래 크기일 땐 끌어도 의미가 없다
+    on = true; sx = e.clientX; sy = e.clientY; ox = vz.x; oy = vz.y;
+    stage.classList.add('drag');
+    stage.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener('pointermove', e => {
+    if(!on) return;
+    vz.x = ox + (e.clientX - sx);
+    vz.y = oy + (e.clientY - sy);
+    applyStageZoom();
+  });
+  const end = () => { on = false; stage.classList.remove('drag'); };
+  stage.addEventListener('pointerup', end);
+  stage.addEventListener('pointercancel', end);
+})();
+
+stage.addEventListener('dblclick', resetStageZoom);
+addEventListener('resize', () => { if(S.loaded) applyStageZoom(); });
 
 function applyPv(){
   if(!gridCanvas) return;
