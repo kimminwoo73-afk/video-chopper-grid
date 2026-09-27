@@ -1,0 +1,4 @@
+# 작업 도구가 만드는 임시 파일 (프로젝트와 무관)
+.planning/
+docs/plans/.snapshots/
+.playwright-mcp/
