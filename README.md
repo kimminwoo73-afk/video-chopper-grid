@@ -44,6 +44,17 @@
 | `P` | 현재 프레임을 PNG로 저장 |
 | `Shift + 드래그` | 타임라인에서 삭제할 구간 고르기 |
 
+## 바탕화면 아이콘 만들기 (윈도우)
+
+1. `C:\VideoChopper` 폴더를 만들고 `index.html`과 [`icon.ico`](icon.ico)를 넣습니다.
+2. 바탕화면 빈 곳에서 **오른쪽 클릭 → 새로 만들기 → 바로 가기**를 누르고, 항목 위치에 아래 한 줄을 붙여 넣습니다.
+   - 엣지: `"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --app="file:///C:/VideoChopper/index.html"`
+   - 크롬: `"C:\Program Files\Google\Chrome\Application\chrome.exe" --app="file:///C:/VideoChopper/index.html"`
+3. 이름을 `영상 편집기`로 짓고 **마침**을 누릅니다.
+4. 만든 아이콘을 **오른쪽 클릭 → 속성 → 아이콘 변경 → 찾아보기**에서 `C:\VideoChopper\icon.ico`를 고르고 **확인**을 누릅니다.
+
+`--app=`을 붙이면 주소창 없는 앱 전용 창으로 열립니다.
+
 ## 기술
 
 순수 HTML + CSS + JavaScript. 빌드 도구도, 외부 라이브러리도, 서버도 없습니다.
