@@ -176,6 +176,20 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
 #preview .view.drag{cursor:grabbing}
 #preview canvas{position:absolute;top:0;left:0;transform-origin:0 0}
 
+#stt{
+  position:fixed;top:0;right:0;bottom:0;width:min(440px,100vw);z-index:40;
+  background:var(--panel);border-left:1px solid var(--line);box-shadow:-8px 0 24px #0008;
+  display:flex;flex-direction:column;
+}
+#stt .bar{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line)}
+#stt .body{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+#stt select{background:#0d1117;border:1px solid var(--line);border-radius:6px;padding:5px 6px}
+#stt .note{font-size:12px;color:var(--dim);line-height:1.6}
+#stt .note b{color:var(--fg)}
+#sttList{display:flex;flex-direction:column;gap:2px}
+#sttList .ln{display:flex;gap:10px;padding:5px 6px;border-radius:6px;cursor:pointer}
+#sttList .ln:hover{background:#ffffff0d}
+#sttList .ln .t{font-family:Consolas,monospace;font-size:12px;color:var(--accent);flex:0 0 auto;padding-top:1px}
 #busy{
   position:fixed;inset:0;background:#000000cc;z-index:60;
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
@@ -319,6 +333,7 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
       <button id="btnAudio" title="잘라낸 부분을 뺀 소리만 WAV로 저장">🎵 오디오 추출</button>
       <button id="btnFrame" title="지금 화면을 원본 크기 PNG로 저장 (단축키 P)">📷 현재 프레임</button>
       <button id="btnFrames" title="그리드에 들어갈 프레임을 한 장씩 PNG로 뽑아 ZIP으로 저장">🖼 컷 프레임 전부</button>
+      <button id="btnStt" title="AI가 말을 듣고 글자로 받아씁니다 (처음 한 번은 인터넷 필요)">📝 받아쓰기</button>
     </div>
 
     <div class="sep"></div>
@@ -360,6 +375,43 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
     <button id="pvClose">Close</button>
   </div>
   <div class="view" id="pvView"></div>
+</div>
+
+<!-- 📝 받아쓰기 패널: 오른쪽에 떠서 영상은 계속 보인다 -->
+<div id="stt" hidden>
+  <div class="bar">
+    <b>📝 받아쓰기</b>
+    <span class="sp"></span>
+    <button id="sttClose">닫기</button>
+  </div>
+  <div class="body">
+    <div class="grp">
+      <span class="lab">언어</span>
+      <select id="sttLang">
+        <option value="korean">한국어</option>
+        <option value="english">영어</option>
+        <option value="">자동</option>
+      </select>
+      <span class="lab">정확도</span>
+      <select id="sttModel">
+        <option value="onnx-community/whisper-tiny">빠름 (약 41MB)</option>
+        <option value="onnx-community/whisper-base" selected>보통 (약 77MB)</option>
+        <option value="onnx-community/whisper-small">정확 (약 249MB)</option>
+      </select>
+    </div>
+    <div class="note">
+      처음 한 번은 인터넷으로 AI 모델을 받아요. 소리는 밖으로 보내지 않고 이 컴퓨터 안에서만 글자로 바꿔요.
+      잘라낸 부분은 빼고 받아쓰며, 시간은 <b>저장한 영상</b> 기준이에요.
+    </div>
+    <button id="sttRun" class="primary">▶ 받아쓰기 시작</button>
+    <div class="time" id="sttMsg"></div>
+    <div id="sttList"></div>
+    <div class="grp" id="sttOut" hidden>
+      <button id="sttCopy">📋 복사</button>
+      <button id="sttTxt">💾 TXT</button>
+      <button id="sttSrt">🎬 SRT 자막</button>
+    </div>
+  </div>
 </div>
 
 <div id="busy" hidden>
@@ -1700,6 +1752,151 @@ function makeZip(files){
   return new Blob([...parts, ...central, e], { type: 'application/zip' });
 }
 
+/* ── 📝 받아쓰기 (말 → 글자) ──────────────────────────────────────
+   OpenAI의 Whisper 음성 인식 모델을 Transformers.js로 브라우저 안에서 돌린다.
+   AI 도구와 모델은 처음 누를 때 인터넷에서 받아 오고, 소리는 밖으로 보내지 않는다.
+   받아쓰는 소리는 잘라낸 구간을 뺀 나머지라서, 시간은 저장한 영상 기준이다.    */
+const TRANSFORMERS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0';
+let sttLib = null, sttPipe = null, sttPipeKey = '', sttChunks = [];
+
+/* 남긴 소리만 이어 붙여 16kHz 한 채널로 만든다 (Whisper가 원하는 형태) */
+async function keptAudio16k(){
+  const data = await S.file.arrayBuffer();
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC();
+  let buf;
+  try{ buf = await ctx.decodeAudioData(data); } finally { ctx.close(); }
+  const rate = buf.sampleRate;
+  const segs = keptSegments().map(g => [Math.round(g.a * rate), Math.min(buf.length, Math.round(g.b * rate))])
+                             .filter(([a, b]) => b > a);
+  const len = segs.reduce((n, [a, b]) => n + b - a, 0);
+  if(!len) return null;
+  const mono = new Float32Array(len);
+  const chs = [...Array(buf.numberOfChannels)].map((_, i) => buf.getChannelData(i));
+  let o = 0;
+  for(const [a, b] of segs){
+    for(let i = a; i < b; i++, o++){
+      let v = 0;
+      for(const c of chs) v += c[i];
+      mono[o] = v / chs.length;
+    }
+  }
+  const outLen = Math.ceil(len / rate * 16000);
+  const off = new OfflineAudioContext(1, outLen, 16000);
+  const src = off.createBufferSource();
+  const b1 = off.createBuffer(1, len, rate);
+  b1.copyToChannel(mono, 0);
+  src.buffer = b1;
+  src.connect(off.destination);
+  src.start();
+  return (await off.startRendering()).getChannelData(0);
+}
+
+/* 저장한 영상 기준 시각 → 원본 영상 시각 (줄을 누르면 그 자리로 가려고) */
+function keptToSrc(t){
+  for(const g of keptSegments()){
+    const len = g.b - g.a;
+    if(t < len) return g.a + t;
+    t -= len;
+  }
+  return S.duration;
+}
+
+function sttMsg(t){ $('#sttMsg').textContent = t; }
+
+async function runTranscribe(){
+  if(!S.loaded || !S.file) return;
+  const btn = $('#sttRun');
+  btn.disabled = true;
+  $('#sttOut').hidden = true;
+  $('#sttList').innerHTML = '';
+  try{
+    // 1) AI 도구 불러오기
+    if(!sttLib){
+      sttMsg('AI 도구를 불러오는 중… (인터넷 필요)');
+      try{ sttLib = await import(TRANSFORMERS_URL); }
+      catch(e){ throw new Error('AI 도구를 받지 못했습니다. 인터넷 연결을 확인해 주세요.'); }
+      // 파일로 연 경우(file://) 브라우저 저장소를 못 쓸 수 있다 — 그러면 매번 새로 받는다
+      try{ await caches.open('stt-check'); }catch(e){ sttLib.env.useBrowserCache = false; }
+    }
+    // 2) 모델 불러오기 (처음엔 내려받기)
+    const model = $('#sttModel').value;
+    if(!sttPipe || sttPipeKey !== model){
+      const files = {};
+      sttMsg('AI 모델을 준비하는 중…');
+      sttPipe = await sttLib.pipeline('automatic-speech-recognition', model, {
+        dtype: 'q8', device: 'wasm',
+        progress_callback: p => {
+          if(p.status !== 'progress' || !p.total) return;
+          files[p.file] = [p.loaded, p.total];
+          const [l, t] = Object.values(files).reduce((a, [x, y]) => [a[0] + x, a[1] + y], [0, 0]);
+          sttMsg(`AI 모델 받는 중… ${Math.floor(l / t * 100)}% (${sizeText(l)} / ${sizeText(t)})`);
+        },
+      });
+      sttPipeKey = model;
+    }
+    // 3) 소리 준비
+    sttMsg('소리를 준비하는 중…');
+    const audio = await keptAudio16k();
+    if(!audio) throw new Error('받아쓸 소리가 없습니다.');
+    // 4) 받아쓰기
+    const secs = audio.length / 16000;
+    sttMsg(`받아쓰는 중… (${fmt(secs)} 분량, 컴퓨터 성능에 따라 시간이 걸려요)`);
+    const lang = $('#sttLang').value;
+    const out = await sttPipe(audio, {
+      chunk_length_s: 30, stride_length_s: 5, return_timestamps: true,
+      ...(lang ? { language: lang, task: 'transcribe' } : {}),
+    });
+    sttChunks = (out.chunks && out.chunks.length ? out.chunks : [{ timestamp: [0, secs], text: out.text || '' }])
+      .map(c => ({ a: c.timestamp[0] || 0, b: c.timestamp[1] ?? secs, text: (c.text || '').trim() }))
+      .filter(c => c.text);
+    renderStt();
+    sttMsg(sttChunks.length ? `끝! ${sttChunks.length}줄을 받아썼어요. 줄을 누르면 그 장면으로 가요.` : '알아들은 말이 없어요. (소리가 없거나 너무 작을 수 있어요)');
+  }catch(e){
+    const m = String(e && e.message || e);
+    sttMsg(/소리/.test(m) || /AI 도구/.test(m) ? m
+      : /decode|Unable to decode|EncodingError/i.test(m) ? '이 영상에서 소리를 찾지 못했습니다. (소리가 없는 영상일 수 있어요)'
+      : /fetch|network|Load failed/i.test(m) ? 'AI 모델을 받지 못했습니다. 인터넷 연결을 확인하고 다시 눌러 주세요.'
+      : '받아쓰기에 실패했습니다: ' + m);
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+function renderStt(){
+  const list = $('#sttList');
+  list.innerHTML = '';
+  for(const c of sttChunks){
+    const row = document.createElement('div');
+    row.className = 'ln';
+    const t = document.createElement('span');
+    t.className = 't';
+    t.textContent = fmt(c.a);
+    const x = document.createElement('span');
+    x.textContent = c.text;
+    row.append(t, x);
+    row.onclick = () => { video.pause(); seekTo(keptToSrc(c.a)); };
+    list.appendChild(row);
+  }
+  $('#sttOut').hidden = !sttChunks.length;
+}
+
+const sttText = () => sttChunks.map(c => c.text).join('\n');
+
+function sttSrt(){
+  const ts = t => {
+    const ms = Math.max(0, Math.round(t * 1000));
+    const h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000) % 60, s = Math.floor(ms / 1000) % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms % 1000).padStart(3, '0')}`;
+  };
+  return sttChunks.map((c, i) => `${i + 1}\n${ts(c.a)} --> ${ts(Math.max(c.b, c.a + 0.5))}\n${c.text}\n`).join('\n');
+}
+
+async function copyText(t){
+  try{ await navigator.clipboard.writeText(t); toast('복사했습니다.'); }
+  catch(e){ toast('복사하지 못했습니다. TXT로 저장해 주세요.'); }
+}
+
 /* ── 미리보기 ─────────────────────────── */
 const pv = { z: 1, x: 0, y: 0 };
 
@@ -2011,6 +2208,12 @@ $('#btnFastSave').onclick = fastSave;
 $('#btnAudio').onclick = extractAudio;
 $('#btnFrame').onclick = saveCurrentFrame;
 $('#btnFrames').onclick = saveAllFrames;
+$('#btnStt').onclick = () => { $('#stt').hidden = false; };
+$('#sttClose').onclick = () => { $('#stt').hidden = true; };
+$('#sttRun').onclick = runTranscribe;
+$('#sttCopy').onclick = () => copyText(sttText());
+$('#sttTxt').onclick = () => download(new Blob([sttText()], { type: 'text/plain' }), baseName() + '_transcript.txt');
+$('#sttSrt').onclick = () => download(new Blob([sttSrt()], { type: 'application/x-subrip' }), baseName() + '.srt');
 
 $('#sens').oninput = e => { S.sens = +e.target.value; $('#sensV').textContent = S.sens; };
 $('#btnDetect').onclick = detectCuts;
@@ -2064,6 +2267,7 @@ window.addEventListener('keydown', e => {
     if(e.key === 'Escape'){ $('#preview').hidden = true; e.preventDefault(); }
     return;
   }
+  if(e.key === 'Escape' && !$('#stt').hidden){ $('#stt').hidden = true; e.preventDefault(); return; }
   if(!S.loaded || S.exporting) return;   // 영상 저장 중에는 단축키를 막는다
 
   switch(e.key){
