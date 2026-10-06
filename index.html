@@ -176,6 +176,27 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
 #preview .view.drag{cursor:grabbing}
 #preview canvas{position:absolute;top:0;left:0;transform-origin:0 0}
 
+#stt,#merge{
+  position:fixed;top:0;right:0;bottom:0;width:min(440px,100vw);z-index:40;
+  background:var(--panel);border-left:1px solid var(--line);box-shadow:-8px 0 24px #0008;
+  display:flex;flex-direction:column;
+}
+#stt .bar,#merge .bar{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line)}
+#stt .body,#merge .body{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+#stt select{background:#0d1117;border:1px solid var(--line);border-radius:6px;padding:5px 6px}
+#stt .note,#merge .note{font-size:12px;color:var(--dim);line-height:1.6}
+#stt .note b,#merge .note b{color:var(--fg)}
+#sttList{display:flex;flex-direction:column;gap:2px}
+#sttList .ln{display:flex;gap:10px;padding:5px 6px;border-radius:6px;cursor:pointer}
+#sttList .ln:hover{background:#ffffff0d}
+#sttList .ln .t{font-family:Consolas,monospace;font-size:12px;color:var(--accent);flex:0 0 auto;padding-top:1px}
+#mergeList{display:flex;flex-direction:column;gap:6px}
+#mergeList .it{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#0d1117}
+#mergeList .it .n{font-family:Consolas,monospace;color:var(--accent);flex:0 0 auto}
+#mergeList .it .nm{flex:1;min-width:0}
+#mergeList .it .nm div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#mergeList .it .nm .time{font-size:12px}
+#mergeList .empty{font-size:12px;color:var(--dim);padding:8px 2px}
 #busy{
   position:fixed;inset:0;background:#000000cc;z-index:60;
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
@@ -309,6 +330,7 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
       <span class="lab">저장</span>
       <button id="btnFastSave" class="primary" title="다시 녹화하지 않고 잘라 붙여서 몇 초 만에 원본 화질로 저장 (mp4 · mov)">⚡ 빠른 저장</button>
       <button id="btnSaveVideo" title="재생하면서 녹화해서 저장 (모든 형식, 남은 길이만큼 걸림)">💾 녹화 저장</button>
+      <button id="btnMerge" title="지금 영상 뒤에 다른 영상들을 이어 붙여 한 개로 저장">🎞 영상 합치기</button>
     </div>
     <div class="grp"><span class="time" id="saveInfo"></span></div>
 
@@ -319,6 +341,7 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
       <button id="btnAudio" title="잘라낸 부분을 뺀 소리만 WAV로 저장">🎵 오디오 추출</button>
       <button id="btnFrame" title="지금 화면을 원본 크기 PNG로 저장 (단축키 P)">📷 현재 프레임</button>
       <button id="btnFrames" title="그리드에 들어갈 프레임을 한 장씩 PNG로 뽑아 ZIP으로 저장">🖼 컷 프레임 전부</button>
+      <button id="btnStt" title="AI가 말을 듣고 글자로 받아씁니다 (처음 한 번은 인터넷 필요)">📝 받아쓰기</button>
     </div>
 
     <div class="sep"></div>
@@ -361,6 +384,67 @@ header .fname{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:elli
   </div>
   <div class="view" id="pvView"></div>
 </div>
+
+<!-- 📝 받아쓰기 패널: 오른쪽에 떠서 영상은 계속 보인다 -->
+<div id="stt" hidden>
+  <div class="bar">
+    <b>📝 받아쓰기</b>
+    <span class="sp"></span>
+    <button id="sttClose">닫기</button>
+  </div>
+  <div class="body">
+    <div class="grp">
+      <span class="lab">언어</span>
+      <select id="sttLang">
+        <option value="korean">한국어</option>
+        <option value="english">영어</option>
+        <option value="">자동</option>
+      </select>
+      <span class="lab">정확도</span>
+      <select id="sttModel">
+        <option value="onnx-community/whisper-tiny">빠름 (약 41MB)</option>
+        <option value="onnx-community/whisper-base" selected>보통 (약 77MB)</option>
+        <option value="onnx-community/whisper-small">정확 (약 249MB)</option>
+      </select>
+    </div>
+    <div class="note">
+      처음 한 번은 인터넷으로 AI 모델을 받아요. 소리는 밖으로 보내지 않고 이 컴퓨터 안에서만 글자로 바꿔요.
+      잘라낸 부분은 빼고 받아쓰며, 시간은 <b>저장한 영상</b> 기준이에요.
+    </div>
+    <button id="sttRun" class="primary">▶ 받아쓰기 시작</button>
+    <div class="time" id="sttMsg"></div>
+    <div id="sttList"></div>
+    <div class="grp" id="sttOut" hidden>
+      <button id="sttCopy">📋 복사</button>
+      <button id="sttTxt">💾 TXT</button>
+      <button id="sttSrt">🎬 SRT 자막</button>
+    </div>
+  </div>
+</div>
+
+<!-- 🎞 영상 합치기 패널 -->
+<div id="merge" hidden>
+  <div class="bar">
+    <b>🎞 영상 합치기</b>
+    <span class="sp"></span>
+    <button id="mergeClose">닫기</button>
+  </div>
+  <div class="body">
+    <div class="note">
+      위에서부터 차례로 이어 붙여 <b>한 개의 영상</b>으로 저장해요.
+      ▲▼로 순서를 바꾸고 ✕로 뺄 수 있어요. 첫 번째 영상의 화면 크기에 맞추고, 크기가 다르면 검은 여백을 넣어요.
+    </div>
+    <div id="mergeList"></div>
+    <div class="grp">
+      <button id="mergeAdd">＋ 영상 추가</button>
+      <button id="mergeCur" hidden>＋ 지금 영상 다시 넣기</button>
+    </div>
+    <button id="mergeRun" class="primary">💾 합쳐서 저장</button>
+    <div class="time" id="mergeMsg"></div>
+  </div>
+</div>
+<input type="file" id="mergeFile" accept="video/*" multiple hidden>
+<video id="mv" playsinline preload="auto" hidden></video>
 
 <div id="busy" hidden>
   <div id="busyMsg">처리 중…</div>
@@ -798,22 +882,22 @@ function openFile(f){
 
 /* MediaRecorder webm이나 일부 스트리밍 mp4는 duration이 Infinity로 온다.
    끝으로 한 번 튕겨 주면 브라우저가 실제 길이를 계산한다. */
-function resolveDuration(){
-  if(isFinite(video.duration) && video.duration > 0) return Promise.resolve(video.duration);
+function resolveDuration(el = video){
+  if(isFinite(el.duration) && el.duration > 0) return Promise.resolve(el.duration);
   return new Promise(resolve => {
     let settled = false;
     const finish = () => {
       if(settled) return;
       settled = true;
-      video.removeEventListener('timeupdate', probe);
-      video.removeEventListener('durationchange', probe);
-      try { video.currentTime = 0; } catch(e){}
-      resolve(video.duration);
+      el.removeEventListener('timeupdate', probe);
+      el.removeEventListener('durationchange', probe);
+      try { el.currentTime = 0; } catch(e){}
+      resolve(el.duration);
     };
-    const probe = () => { if(isFinite(video.duration) && video.duration > 0) finish(); };
-    video.addEventListener('timeupdate', probe);
-    video.addEventListener('durationchange', probe);
-    try { video.currentTime = 1e7; } catch(e){ finish(); }
+    const probe = () => { if(isFinite(el.duration) && el.duration > 0) finish(); };
+    el.addEventListener('timeupdate', probe);
+    el.addEventListener('durationchange', probe);
+    try { el.currentTime = 1e7; } catch(e){ finish(); }
     setTimeout(finish, 4000);
   });
 }
@@ -852,6 +936,7 @@ video.addEventListener('loadedmetadata', async () => {
     $('#fpsNote').textContent = '감지 실패 · 직접 입력';
   }
   render();
+  if(!$('#merge').hidden) renderMerge();
 });
 
 video.addEventListener('error', () => {
@@ -1057,9 +1142,23 @@ function getAudioGraph(){
     const rec = ctx.createMediaStreamDestination();
     src.connect(speaker).connect(ctx.destination);
     src.connect(rec);
-    audioGraph = { ctx, speaker, rec };
+    audioGraph = { ctx, speaker, rec, mv: false };
   }catch(e){ audioGraph = null; }
   return audioGraph;
+}
+
+/* 합치기용 두 번째 영상(#mv)의 소리도 같은 녹음 통로로 보낸다 */
+function mergeAudioGraph(){
+  const ag = getAudioGraph();
+  if(ag && !ag.mv){
+    try{
+      const src = ag.ctx.createMediaElementSource($('#mv'));
+      src.connect(ag.speaker);
+      src.connect(ag.rec);
+      ag.mv = true;
+    }catch(e){ return null; }
+  }
+  return ag;
 }
 
 /* 남길 구간 = 전체에서 잘라낸·삭제한 구간을 뺀 나머지 */
@@ -1548,6 +1647,236 @@ async function fastSave(){
     (sel.dropped ? ` · 기준 화면이 없는 짧은 구간 ${sel.dropped}개는 빠졌어요` : ''));
 }
 
+/* ── 영상 합치기 ─────────────────────────────────────────
+   목록의 영상을 위에서부터 차례로 재생하면서 한 캔버스에 그리고 녹화한다 (녹화 저장과 같은 방식).
+   'cur' = 지금 편집 중인 영상(잘라낸 부분은 빼고), 'file' = 새로 추가한 파일.
+   추가한 파일은 숨은 두 번째 영상(#mv)에서 하나씩 연다.                     */
+const mv = $('#mv');
+let mergeItems = [{ kind: 'cur' }];
+
+function loadInto(el, url){
+  return new Promise((resolve, reject) => {
+    const off = () => { el.removeEventListener('loadedmetadata', ok); el.removeEventListener('error', bad); };
+    const ok = () => { off(); resolve(); };
+    const bad = () => { off(); reject(new Error('브라우저가 열 수 없는 영상입니다')); };
+    el.addEventListener('loadedmetadata', ok);
+    el.addEventListener('error', bad);
+    el.src = url;
+    el.load();
+  });
+}
+
+function unloadMv(){
+  mv.pause();
+  mv.removeAttribute('src');
+  mv.load();
+}
+
+function seekEl(el, t){
+  if(Math.abs(el.currentTime - t) < 1e-4) return Promise.resolve();
+  return new Promise(resolve => {
+    const on = () => { el.removeEventListener('seeked', on); resolve(); };
+    el.addEventListener('seeked', on);
+    el.currentTime = t;
+  });
+}
+
+async function addMergeFiles(files){
+  for(const f of files){
+    const url = URL.createObjectURL(f);
+    try{
+      await loadInto(mv, url);
+      const dur = await resolveDuration(mv);
+      if(!isFinite(dur) || dur <= 0) throw new Error('길이를 읽지 못했습니다');
+      mergeItems.push({ kind: 'file', file: f, name: f.name, dur, w: mv.videoWidth, h: mv.videoHeight });
+    }catch(e){
+      toast(`${f.name}: 이 영상은 열 수 없어요. mp4(H.264)나 webm으로 바꿔보세요.`);
+    }
+    unloadMv();
+    URL.revokeObjectURL(url);
+  }
+  renderMerge();
+}
+
+const mergeLen = it => it.kind === 'cur' ? sumLen(keptSegments()) : it.dur;
+const mergeSize = it => it.kind === 'cur' ? [S.vw, S.vh] : [it.w, it.h];
+
+function renderMerge(){
+  const list = $('#mergeList');
+  list.innerHTML = '';
+  mergeItems.forEach((it, i) => {
+    const cur = it.kind === 'cur';
+    const [w, h] = mergeSize(it);
+    const row = document.createElement('div');
+    row.className = 'it';
+    row.innerHTML = '<span class="n"></span><div class="nm"><div></div><div class="time"></div></div>';
+    row.querySelector('.n').textContent = i + 1;
+    row.querySelector('.nm div').textContent = cur ? `지금 영상 · ${$('#fname').textContent}` : it.name;
+    row.querySelector('.nm .time').textContent = `${fmt(mergeLen(it))} · ${w ? w + '×' + h : '소리만'}` +
+      (cur && S.gone.length ? ' · 잘라낸 부분 빼고' : '');
+    const btn = (t, title, fn, off) => {
+      const b = document.createElement('button');
+      b.className = 'mini';
+      b.textContent = t;
+      b.title = title;
+      b.disabled = off;
+      b.onclick = fn;
+      row.appendChild(b);
+    };
+    btn('▲', '위로', () => moveMerge(i, -1), i === 0);
+    btn('▼', '아래로', () => moveMerge(i, 1), i === mergeItems.length - 1);
+    btn('✕', '목록에서 빼기', () => { mergeItems.splice(i, 1); renderMerge(); }, false);
+    list.appendChild(row);
+  });
+  if(!mergeItems.length) list.innerHTML = '<div class="empty">합칠 영상이 없어요. ＋ 영상 추가를 눌러 주세요.</div>';
+  $('#mergeCur').hidden = !S.loaded || mergeItems.some(it => it.kind === 'cur');
+  const total = mergeItems.reduce((s, it) => s + mergeLen(it), 0);
+  $('#mergeRun').disabled = mergeItems.length < 2;
+  $('#mergeMsg').textContent = mergeItems.length < 2
+    ? '영상을 2개 이상 넣어 주세요.'
+    : `모두 ${mergeItems.length}개 · 합친 길이 ${fmt(total)} (저장에도 이만큼 시간이 걸려요)`;
+}
+
+function moveMerge(i, d){
+  const j = i + d;
+  if(j < 0 || j >= mergeItems.length) return;
+  [mergeItems[i], mergeItems[j]] = [mergeItems[j], mergeItems[i]];
+  renderMerge();
+}
+
+function openMerge(){
+  $('#stt').hidden = true;
+  $('#merge').hidden = false;
+  renderMerge();
+}
+
+/* 크기가 다른 영상은 비율을 지키며 가운데에 놓고, 남는 곳은 검게 칠한다 */
+function drawFit(cx, el, W, H){
+  cx.fillStyle = '#000';
+  cx.fillRect(0, 0, W, H);
+  const w = el.videoWidth, h = el.videoHeight;
+  if(!w || !h) return;
+  const k = Math.min(W / w, H / h), dw = w * k, dh = h * k;
+  cx.drawImage(el, (W - dw) / 2, (H - dh) / 2, dw, dh);
+}
+
+/* el을 end 초까지 재생하면서 매 화면마다 onFrame을 부른다 */
+function playUntil(el, end, tol, onFrame){
+  return new Promise(resolve => {
+    let fin = false;
+    const stop = () => {
+      if(fin) return;
+      fin = true;
+      clearInterval(watch);
+      el.removeEventListener('ended', stop);
+      el.removeEventListener('pause', stop);
+      resolve();
+    };
+    el.addEventListener('ended', stop);
+    el.addEventListener('pause', stop);
+    const watch = setInterval(() => { if(cancelFlag || el.currentTime >= end - tol) stop(); }, 50);
+    const tick = () => {
+      if(fin) return;
+      onFrame();
+      if(cancelFlag || el.currentTime >= end - tol){ stop(); return; }
+      requestAnimationFrame(tick);
+    };
+    tick();
+  });
+}
+
+async function runMerge(){
+  if(!S.loaded || S.exporting || mergeItems.length < 2) return;
+  const type = pickRecorderType(true);
+  const cv = document.createElement('canvas');
+  if(!type || !cv.captureStream){
+    toast('이 브라우저는 영상 저장을 지원하지 않습니다. 크롬이나 엣지에서 해주세요.');
+    return;
+  }
+  const sized = mergeItems.find(it => mergeSize(it)[0] > 0);
+  if(!sized){ toast('화면이 있는 영상이 하나는 있어야 해요.'); return; }
+  const total = mergeItems.reduce((s, it) => s + mergeLen(it), 0);
+  if(total < frameDur()){ toast('합칠 부분이 없습니다.'); return; }
+
+  // 저장할 화면 크기 = 첫 번째(화면 있는) 영상 크기. 코덱이 홀수 크기를 싫어해서 짝수로 맞춘다
+  const [W, H] = mergeSize(sized).map(v => v - v % 2);
+  cv.width = W; cv.height = H;
+  const cx = cv.getContext('2d');
+  const stream = cv.captureStream();
+  const ag = mergeAudioGraph();
+  if(ag){
+    await ag.ctx.resume().catch(() => {});
+    ag.rec.stream.getAudioTracks().forEach(t => stream.addTrack(t));
+  }
+  const bps = clamp(W * H * S.fps * 0.15, 2e6, 20e6);
+  const rec = new MediaRecorder(stream, { mimeType: type[0], videoBitsPerSecond: bps });
+  const chunks = [];
+  rec.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
+  const stopped = new Promise(r => { rec.onstop = r; });
+
+  const back = video.currentTime, wasMuted = video.muted, wasRate = video.playbackRate;
+  S.exporting = true;
+  video.pause();
+  if(ag) ag.speaker.gain.value = 0;   // 저장하는 동안 스피커 소리는 끈다
+  busy(true, '영상을 합치는 중… (재생하면서 녹화합니다)');
+
+  let done = 0, failed = '';
+  try{
+    for(let i = 0; i < mergeItems.length && !cancelFlag; i++){
+      const it = mergeItems[i];
+      const cur = it.kind === 'cur';
+      $('#busyMsg').textContent = `영상을 합치는 중… ${i + 1} / ${mergeItems.length} (재생하면서 녹화합니다)`;
+      let el = video, segs, seek = seekTo, url = null;
+      if(cur){
+        segs = keptSegments();
+      }else{
+        url = URL.createObjectURL(it.file);
+        await loadInto(mv, url);
+        el = mv;
+        segs = [{ a: 0, b: it.dur }];
+        seek = t => seekEl(mv, t);
+      }
+      el.muted = false;            // 음소거면 녹음도 무음이 된다
+      el.playbackRate = 1;
+      const tol = cur ? frameDur() / 2 : 0.02;
+      for(const g of segs){
+        if(cancelFlag) break;
+        await seek(g.a);
+        drawFit(cx, el, W, H);
+        if(rec.state === 'inactive') rec.start(1000); else rec.resume();
+        await el.play();
+        await playUntil(el, g.b, tol, () => {
+          drawFit(cx, el, W, H);
+          busyAt((done + clamp(el.currentTime - g.a, 0, g.b - g.a)) / total);
+        });
+        el.pause();
+        if(rec.state === 'recording') rec.pause();
+        done += g.b - g.a;
+      }
+      if(!cur){ unloadMv(); URL.revokeObjectURL(url); }
+    }
+  }catch(e){
+    cancelFlag = true;
+    failed = e.message;
+  }
+
+  if(rec.state !== 'inactive'){ rec.stop(); await stopped; }
+  unloadMv();
+  if(ag) ag.speaker.gain.value = 1;
+  video.muted = wasMuted;
+  video.playbackRate = wasRate;
+  S.exporting = false;
+  busy(false);
+  seekTo(back);
+  if(failed){ toast('합치는 중 문제가 생겼습니다: ' + failed); return; }
+  if(cancelFlag){ toast('합치기를 취소했습니다.'); return; }
+
+  const blob = new Blob(chunks, { type: type[0].split(';')[0] });
+  const name = `${baseName()}_merged.${type[1]}`;
+  download(blob, name);
+  toast(`합쳐서 저장했습니다: ${name} (${sizeText(blob.size)})`);
+}
+
 /* ── 추출 (오디오 / 프레임) ─────────────────────────────── */
 const baseName = () => ($('#fname').textContent || 'video').replace(/\.[^.]+$/, '') || 'video';
 
@@ -1698,6 +2027,151 @@ function makeZip(files){
   e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true);
   e.setUint32(12, cdSize, true); e.setUint32(16, offset, true);
   return new Blob([...parts, ...central, e], { type: 'application/zip' });
+}
+
+/* ── 📝 받아쓰기 (말 → 글자) ──────────────────────────────────────
+   OpenAI의 Whisper 음성 인식 모델을 Transformers.js로 브라우저 안에서 돌린다.
+   AI 도구와 모델은 처음 누를 때 인터넷에서 받아 오고, 소리는 밖으로 보내지 않는다.
+   받아쓰는 소리는 잘라낸 구간을 뺀 나머지라서, 시간은 저장한 영상 기준이다.    */
+const TRANSFORMERS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0';
+let sttLib = null, sttPipe = null, sttPipeKey = '', sttChunks = [];
+
+/* 남긴 소리만 이어 붙여 16kHz 한 채널로 만든다 (Whisper가 원하는 형태) */
+async function keptAudio16k(){
+  const data = await S.file.arrayBuffer();
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC();
+  let buf;
+  try{ buf = await ctx.decodeAudioData(data); } finally { ctx.close(); }
+  const rate = buf.sampleRate;
+  const segs = keptSegments().map(g => [Math.round(g.a * rate), Math.min(buf.length, Math.round(g.b * rate))])
+                             .filter(([a, b]) => b > a);
+  const len = segs.reduce((n, [a, b]) => n + b - a, 0);
+  if(!len) return null;
+  const mono = new Float32Array(len);
+  const chs = [...Array(buf.numberOfChannels)].map((_, i) => buf.getChannelData(i));
+  let o = 0;
+  for(const [a, b] of segs){
+    for(let i = a; i < b; i++, o++){
+      let v = 0;
+      for(const c of chs) v += c[i];
+      mono[o] = v / chs.length;
+    }
+  }
+  const outLen = Math.ceil(len / rate * 16000);
+  const off = new OfflineAudioContext(1, outLen, 16000);
+  const src = off.createBufferSource();
+  const b1 = off.createBuffer(1, len, rate);
+  b1.copyToChannel(mono, 0);
+  src.buffer = b1;
+  src.connect(off.destination);
+  src.start();
+  return (await off.startRendering()).getChannelData(0);
+}
+
+/* 저장한 영상 기준 시각 → 원본 영상 시각 (줄을 누르면 그 자리로 가려고) */
+function keptToSrc(t){
+  for(const g of keptSegments()){
+    const len = g.b - g.a;
+    if(t < len) return g.a + t;
+    t -= len;
+  }
+  return S.duration;
+}
+
+function sttMsg(t){ $('#sttMsg').textContent = t; }
+
+async function runTranscribe(){
+  if(!S.loaded || !S.file) return;
+  const btn = $('#sttRun');
+  btn.disabled = true;
+  $('#sttOut').hidden = true;
+  $('#sttList').innerHTML = '';
+  try{
+    // 1) AI 도구 불러오기
+    if(!sttLib){
+      sttMsg('AI 도구를 불러오는 중… (인터넷 필요)');
+      try{ sttLib = await import(TRANSFORMERS_URL); }
+      catch(e){ throw new Error('AI 도구를 받지 못했습니다. 인터넷 연결을 확인해 주세요.'); }
+      // 파일로 연 경우(file://) 브라우저 저장소를 못 쓸 수 있다 — 그러면 매번 새로 받는다
+      try{ await caches.open('stt-check'); }catch(e){ sttLib.env.useBrowserCache = false; }
+    }
+    // 2) 모델 불러오기 (처음엔 내려받기)
+    const model = $('#sttModel').value;
+    if(!sttPipe || sttPipeKey !== model){
+      const files = {};
+      sttMsg('AI 모델을 준비하는 중…');
+      sttPipe = await sttLib.pipeline('automatic-speech-recognition', model, {
+        dtype: 'q8', device: 'wasm',
+        progress_callback: p => {
+          if(p.status !== 'progress' || !p.total) return;
+          files[p.file] = [p.loaded, p.total];
+          const [l, t] = Object.values(files).reduce((a, [x, y]) => [a[0] + x, a[1] + y], [0, 0]);
+          sttMsg(`AI 모델 받는 중… ${Math.floor(l / t * 100)}% (${sizeText(l)} / ${sizeText(t)})`);
+        },
+      });
+      sttPipeKey = model;
+    }
+    // 3) 소리 준비
+    sttMsg('소리를 준비하는 중…');
+    const audio = await keptAudio16k();
+    if(!audio) throw new Error('받아쓸 소리가 없습니다.');
+    // 4) 받아쓰기
+    const secs = audio.length / 16000;
+    sttMsg(`받아쓰는 중… (${fmt(secs)} 분량, 컴퓨터 성능에 따라 시간이 걸려요)`);
+    const lang = $('#sttLang').value;
+    const out = await sttPipe(audio, {
+      chunk_length_s: 30, stride_length_s: 5, return_timestamps: true,
+      ...(lang ? { language: lang, task: 'transcribe' } : {}),
+    });
+    sttChunks = (out.chunks && out.chunks.length ? out.chunks : [{ timestamp: [0, secs], text: out.text || '' }])
+      .map(c => ({ a: c.timestamp[0] || 0, b: c.timestamp[1] ?? secs, text: (c.text || '').trim() }))
+      .filter(c => c.text);
+    renderStt();
+    sttMsg(sttChunks.length ? `끝! ${sttChunks.length}줄을 받아썼어요. 줄을 누르면 그 장면으로 가요.` : '알아들은 말이 없어요. (소리가 없거나 너무 작을 수 있어요)');
+  }catch(e){
+    const m = String(e && e.message || e);
+    sttMsg(/소리/.test(m) || /AI 도구/.test(m) ? m
+      : /decode|Unable to decode|EncodingError/i.test(m) ? '이 영상에서 소리를 찾지 못했습니다. (소리가 없는 영상일 수 있어요)'
+      : /fetch|network|Load failed/i.test(m) ? 'AI 모델을 받지 못했습니다. 인터넷 연결을 확인하고 다시 눌러 주세요.'
+      : '받아쓰기에 실패했습니다: ' + m);
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+function renderStt(){
+  const list = $('#sttList');
+  list.innerHTML = '';
+  for(const c of sttChunks){
+    const row = document.createElement('div');
+    row.className = 'ln';
+    const t = document.createElement('span');
+    t.className = 't';
+    t.textContent = fmt(c.a);
+    const x = document.createElement('span');
+    x.textContent = c.text;
+    row.append(t, x);
+    row.onclick = () => { video.pause(); seekTo(keptToSrc(c.a)); };
+    list.appendChild(row);
+  }
+  $('#sttOut').hidden = !sttChunks.length;
+}
+
+const sttText = () => sttChunks.map(c => c.text).join('\n');
+
+function sttSrt(){
+  const ts = t => {
+    const ms = Math.max(0, Math.round(t * 1000));
+    const h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000) % 60, s = Math.floor(ms / 1000) % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms % 1000).padStart(3, '0')}`;
+  };
+  return sttChunks.map((c, i) => `${i + 1}\n${ts(c.a)} --> ${ts(Math.max(c.b, c.a + 0.5))}\n${c.text}\n`).join('\n');
+}
+
+async function copyText(t){
+  try{ await navigator.clipboard.writeText(t); toast('복사했습니다.'); }
+  catch(e){ toast('복사하지 못했습니다. TXT로 저장해 주세요.'); }
 }
 
 /* ── 미리보기 ─────────────────────────── */
@@ -2011,6 +2485,18 @@ $('#btnFastSave').onclick = fastSave;
 $('#btnAudio').onclick = extractAudio;
 $('#btnFrame').onclick = saveCurrentFrame;
 $('#btnFrames').onclick = saveAllFrames;
+$('#btnStt').onclick = () => { $('#merge').hidden = true; $('#stt').hidden = false; };
+$('#sttClose').onclick = () => { $('#stt').hidden = true; };
+$('#sttRun').onclick = runTranscribe;
+$('#btnMerge').onclick = openMerge;
+$('#mergeClose').onclick = () => { $('#merge').hidden = true; };
+$('#mergeAdd').onclick = () => $('#mergeFile').click();
+$('#mergeFile').onchange = e => { addMergeFiles([...e.target.files]); e.target.value = ''; };
+$('#mergeCur').onclick = () => { mergeItems.unshift({ kind: 'cur' }); renderMerge(); };
+$('#mergeRun').onclick = runMerge;
+$('#sttCopy').onclick = () => copyText(sttText());
+$('#sttTxt').onclick = () => download(new Blob([sttText()], { type: 'text/plain' }), baseName() + '_transcript.txt');
+$('#sttSrt').onclick = () => download(new Blob([sttSrt()], { type: 'application/x-subrip' }), baseName() + '.srt');
 
 $('#sens').oninput = e => { S.sens = +e.target.value; $('#sensV').textContent = S.sens; };
 $('#btnDetect').onclick = detectCuts;
@@ -2064,6 +2550,8 @@ window.addEventListener('keydown', e => {
     if(e.key === 'Escape'){ $('#preview').hidden = true; e.preventDefault(); }
     return;
   }
+  if(e.key === 'Escape' && !$('#stt').hidden){ $('#stt').hidden = true; e.preventDefault(); return; }
+  if(e.key === 'Escape' && !$('#merge').hidden && !S.exporting){ $('#merge').hidden = true; e.preventDefault(); return; }
   if(!S.loaded || S.exporting) return;   // 영상 저장 중에는 단축키를 막는다
 
   switch(e.key){
